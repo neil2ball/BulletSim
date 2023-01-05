@@ -119,6 +119,50 @@ static bool SingleSidedMeshCheckCallback(btManifoldPoint& cp,
         return true;
 }
 
+// After each sub-step, this routine is called.
+// Collisions need to be checked in the substep because, in the full simulation step, something
+//    could bounce off another object thus making no collision when the simulatin step is complete.
+static void SubstepCollisionCallback(btDynamicsWorld *world, btScalar timeStep) {
+	BulletSim* bulletSim = (BulletSim*)world->getWorldUserInfo();
+
+	int numManifolds = world->getDispatcher()->getNumManifolds();
+	for (int j = 0; j < numManifolds; j++)
+	{
+		btPersistentManifold* contactManifold = world->getDispatcher()->getManifoldByIndexInternal(j);
+		int numContacts = contactManifold->getNumContacts();
+		if (numContacts == 0)
+			continue;
+
+		const btCollisionObject* objA = static_cast<const btCollisionObject*>(contactManifold->getBody0());
+		const btCollisionObject* objB = static_cast<const btCollisionObject*>(contactManifold->getBody1());
+
+		// When two objects collide, we only report one contact point
+		const btManifoldPoint& manifoldPoint = contactManifold->getContactPoint(0);
+		const btVector3& contactPoint = manifoldPoint.getPositionWorldOnB();
+		const btVector3 contactNormal = -manifoldPoint.m_normalWorldOnB;	// make relative to A
+		const float penetration = manifoldPoint.getDistance();
+
+		bulletSim->RecordCollision(objA, objB, contactPoint, contactNormal, penetration);
+
+		if (bulletSim->collisionsThisFrame >= bulletSim->maxCollisionsPerFrame) 
+			break;
+	}
+
+	// Any ghost objects must be relieved of their collisions.
+	WorldData::SpecialCollisionObjectMapType::iterator it = bulletSim->getWorldData()->specialCollisionObjects.begin();
+	for (; it != bulletSim->getWorldData()->specialCollisionObjects.end(); it++)
+	{
+		if (bulletSim->collisionsThisFrame >= bulletSim->maxCollisionsPerFrame) 
+			break;
+
+		btCollisionObject* collObj = it->second;
+		btPairCachingGhostObject* obj = (btPairCachingGhostObject*)btGhostObject::upcast(collObj);
+		if (obj)
+		{
+			bulletSim->RecordGhostCollisions(obj);
+		}
+	}
+}
 
 void BulletSim::initPhysics2(ParamBlock* parms, 
 							int maxCollisions, CollisionDesc* collisionArray, 
@@ -130,7 +174,7 @@ void BulletSim::initPhysics2(ParamBlock* parms,
 	// 	sizeof(int), sizeof(long), sizeof(long long), sizeof(float));
 
 	// remember the pointers to pinned memory for returning collisions and property updates
-	m_maxCollisionsPerFrame = maxCollisions;
+	maxCollisionsPerFrame = maxCollisions;
 	m_collidersThisFrameArray = collisionArray;
 	m_maxUpdatesPerFrame = maxUpdates;
 	m_updatesThisFrameArray = updateArray;
@@ -148,7 +192,7 @@ void BulletSim::initPhysics2(ParamBlock* parms,
 	}
 	if (m_worldData.params->maxCollisionAlgorithmPoolSize > 0)
 	{
-		cci.m_defaultMaxCollisionAlgorithmPoolSize = m_worldData.params->maxCollisionAlgorithmPoolSize;
+		cci.m_defaultMaxCollisionAlgorithmPoolSize = (int)m_worldData.params->maxCollisionAlgorithmPoolSize;
 		m_worldData.BSLog("initPhysics2: setting defaultMaxCollisionAlgorithmPoolSize = %f", m_worldData.params->maxCollisionAlgorithmPoolSize);
 	}
 	
@@ -173,6 +217,9 @@ void BulletSim::initPhysics2(ParamBlock* parms,
 	// Create the world
 	btDiscreteDynamicsWorld* dynamicsWorld = new btDiscreteDynamicsWorld(m_dispatcher, m_broadphase, m_solver, m_collisionConfiguration);
 	m_worldData.dynamicsWorld = dynamicsWorld;
+
+	// Register callback for sub-step collisons
+	dynamicsWorld->setInternalTickCallback(SubstepCollisionCallback, (void*) this);
 
 	// Register GImpact collsions since that type can be created
 	btGImpactCollisionAlgorithm::registerAlgorithm((btCollisionDispatcher*)dynamicsWorld->getDispatcher());
@@ -298,6 +345,11 @@ int BulletSim::PhysicsStep2(btScalar timeStep, int maxSubSteps, btScalar fixedTi
 
 	if (m_worldData.dynamicsWorld)
 	{
+
+		// All collisions are recorded by the substep callback which populate m_collidersThisFrame
+		m_collidersThisFrame.clear();
+		collisionsThisFrame = 0;
+
 		// The simulation calls the SimMotionState to put object updates into updatesThisFrame.
 		// m_worldData.BSLog("Before step");
 		numSimSteps = m_worldData.dynamicsWorld->stepSimulation(timeStep, maxSubSteps, fixedTimeStep);
@@ -332,52 +384,7 @@ int BulletSim::PhysicsStep2(btScalar timeStep, int maxSubSteps, btScalar fixedTi
 		// Update the values passed by reference into this function
 		*updatedEntityCount = updates;
 
-		// COLLISIONS =================================================================
-		// Put all of the colliders this frame into m_collidersThisFrameArray
-		m_collidersThisFrame.clear();
-		m_collisionsThisFrame = 0;
-		// m_worldData.BSLog("Checking collision manifolds");
-		int numManifolds = m_worldData.dynamicsWorld->getDispatcher()->getNumManifolds();
-		for (int j = 0; j < numManifolds; j++)
-		{
-			btPersistentManifold* contactManifold = m_worldData.dynamicsWorld->getDispatcher()->getManifoldByIndexInternal(j);
-			int numContacts = contactManifold->getNumContacts();
-			if (numContacts == 0)
-				continue;
-
-			const btCollisionObject* objA = static_cast<const btCollisionObject*>(contactManifold->getBody0());
-			const btCollisionObject* objB = static_cast<const btCollisionObject*>(contactManifold->getBody1());
-
-			// When two objects collide, we only report one contact point
-			const btManifoldPoint& manifoldPoint = contactManifold->getContactPoint(0);
-			const btVector3& contactPoint = manifoldPoint.getPositionWorldOnB();
-			const btVector3 contactNormal = -manifoldPoint.m_normalWorldOnB;	// make relative to A
-			const float penetration = manifoldPoint.getDistance();
-
-			RecordCollision(objA, objB, contactPoint, contactNormal, penetration);
-
-			if (m_collisionsThisFrame >= m_maxCollisionsPerFrame) 
-				break;
-		}
-		// m_worldData.BSLog("Checked manifolds. Collisions=%d", m_collisionsThisFrame);
-
-		// Any ghost objects must be relieved of their collisions.
-		WorldData::SpecialCollisionObjectMapType::iterator it = m_worldData.specialCollisionObjects.begin();
-		for (; it != m_worldData.specialCollisionObjects.end(); it++)
-		{
-			if (m_collisionsThisFrame >= m_maxCollisionsPerFrame) 
-				break;
-
-			btCollisionObject* collObj = it->second;
-			btPairCachingGhostObject* obj = (btPairCachingGhostObject*)btGhostObject::upcast(collObj);
-			if (obj)
-			{
-				RecordGhostCollisions(obj);
-			}
-		}
-		// m_worldData.BSLog("Ghost collisions checked. Total collisions=%d", m_collisionsThisFrame);
-
-		*collidersCount = m_collisionsThisFrame;
+		*collidersCount = collisionsThisFrame;
 	}
 
 	return numSimSteps;
@@ -431,8 +438,8 @@ void BulletSim::RecordCollision(const btCollisionObject* objA, const btCollision
 		cDesc.point = contact;
 		cDesc.normal = contactNormal;
 		cDesc.penetration = penetration;
-		m_collidersThisFrameArray[m_collisionsThisFrame] = cDesc;
-		m_collisionsThisFrame++;
+		m_collidersThisFrameArray[collisionsThisFrame] = cDesc;
+		collisionsThisFrame++;
 	}
 }
 
@@ -445,7 +452,7 @@ void BulletSim::RecordGhostCollisions(btPairCachingGhostObject* obj)
 	// For all the pairs of sets of contact points
 	for (int i=0; i < numPairs; i++)
 	{
-		if (m_collisionsThisFrame >= m_maxCollisionsPerFrame) 
+		if (collisionsThisFrame >= maxCollisionsPerFrame) 
 			break;
 
 		manifoldArray.clear();
@@ -585,6 +592,7 @@ btCollisionShape* BulletSim::CreateHullShape2(int hullCount, float* hulls )
 		// 		);	// DEBUG DEBUG
 		// }	// DEBUG DEBUG
 		convexShape->setMargin(m_worldData.params->collisionMargin);
+		convexShape->optimizeConvexHull();
 		compoundShape->addChildShape(childTrans, convexShape);
 
 		ii += (vertexCount * 3 + 4);
@@ -676,7 +684,7 @@ btCollisionShape* BulletSim::BuildHullShapeFromMesh2(btCollisionShape* mesh, HAC
 
 	// Hullify the mesh
 	myHACD.Compute();
-	int nHulls = myHACD.GetNClusters();	
+	int nHulls = (int)myHACD.GetNClusters();	
 	m_worldData.BSLog("HACD: After compute. nHulls=%d", nHulls);	// DEBUG DEBUG
 
 	// Create the compound shape all the hulls will be added to
@@ -699,7 +707,7 @@ btCollisionShape* BulletSim::BuildHullShapeFromMesh2(btCollisionShape* mesh, HAC
 		btAlignedObjectArray<btVector3> vertices;
 		btVector3 centroid;
 		centroid.setValue(0,0,0);
-		for (int ii=0; ii < nTriangles; ii++)
+		for (int ii=0; ii < (int)nTriangles; ii++)
 		{
 			long tri = trianglesCH[ii].X();
 			btVector3 corner1(pointsCH[tri].X(), pointsCH[tri].Y(), pointsCH[tri].Z() );
@@ -744,10 +752,13 @@ btCollisionShape* BulletSim::BuildHullShapeFromMesh2(btCollisionShape* mesh, HAC
 			btGeometryUtil::getVerticesFromPlaneEquations(shiftedPlaneEquations,shiftedVertices);
 			
 			convexShape = new btConvexHullShape(&(shiftedVertices[0].getX()),shiftedVertices.size());
+			convexShape->optimizeConvexHull();
+
 		}
 		else
 		{
 			convexShape = new btConvexHullShape(&(vertices[0].getX()),vertices.size());
+			convexShape->optimizeConvexHull();
 		}
 		convexShape->setMargin(m_worldData.params->collisionMargin);
 
@@ -1051,7 +1062,7 @@ btCollisionShape* BulletSim::CreateConvexHullShape2(int indicesCount, int* indic
 }
 
 // TODO: get this code working
-SweepHit BulletSim::ConvexSweepTest(IDTYPE id, btVector3& fromPos, btVector3& targetPos, btScalar extraMargin)
+SweepHit BulletSim::ConvexSweepTest(btCollisionShape* shape, btVector3& fromPos, btVector3& targetPos, btScalar extraMargin)
 {
 	return SweepHit();
 	/*
@@ -1116,48 +1127,23 @@ SweepHit BulletSim::ConvexSweepTest(IDTYPE id, btVector3& fromPos, btVector3& ta
 	*/
 }
 
-// TODO: get this code working
-RaycastHit BulletSim::RayTest(IDTYPE id, btVector3& from, btVector3& to)
+RaycastHit BulletSim::RayTest(btVector3& from, btVector3& to, short filterGroup, short filterMask)
 {
-	return RaycastHit();
-	/*
 	RaycastHit hit;
-	hit.ID = ID_INVALID_HIT;
+	btCollisionWorld::ClosestRayResultCallback hitResult(from, to);
+	hitResult.m_collisionFilterGroup = filterGroup;
+	hitResult.m_collisionFilterMask = filterMask;
 
-	btCollisionObject* castingObject = NULL;
-
-	// Look for a character
-	CharactersMapType::iterator cit = m_characters.find(id);
-	if (cit != m_characters.end())
-		castingObject = cit->second;
-
-	if (!castingObject)
+	m_worldData.dynamicsWorld->rayTest(from, to, hitResult);
+	if (hitResult.hasHit())
 	{
-		// Look for a rigid body
-		BodiesMapType::iterator bit = m_bodies.find(id);
-		if (bit != m_bodies.end())
-			castingObject = bit->second;
-	}
-
-	if (castingObject)
-	{
-		// Create a callback for the test
-		ClosestNotMeRayResultCallback callback(castingObject);
-
-		// Do the raycast test
-		m_worldData.dynamicsWorld->rayTest(from, to, callback);
-
-		if (callback.hasHit())
-		{
-			hit.ID = CONVLOCALID(callback.m_collisionObject->getUserPointer());
-			hit.Fraction = callback.m_closestHitFraction;
-			hit.Normal = callback.m_hitNormalWorld;
-			//hit.Point = callback.m_hitPointWorld; // TODO: Is this useful?
-		}
+		hit.ID = CONVLOCALID(hitResult.m_collisionObject->getUserPointer());
+		hit.Fraction = hitResult.m_closestHitFraction;
+		hit.Normal = hitResult.m_hitNormalWorld;
+		hit.Point = hitResult.m_hitPointWorld;
 	}
 
 	return hit;
-	*/
 }
 
 // TODO: get this code working

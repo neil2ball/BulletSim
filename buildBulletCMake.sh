@@ -5,7 +5,7 @@ STARTDIR=$(pwd)
 
 UNAME=$(uname)
 MACH=$(uname -m)
-BULLET=bullet-2.82
+BULLET=bullet-2
 
 cd $BULLET
 mkdir -p bullet-build
@@ -13,34 +13,84 @@ cd bullet-build
 
 if [[ "$UNAME" == "Darwin" ]] ; then
     cmake .. -G "Unix Makefiles" \
+            -DBUILD_BULLET2_DEMOS=off \
+            -DBUILD_BULLET3=on \
+            -DBUILD_CLSOCKET=off \
+            -DBUILD_CPU_DEMOS=off \
+            -DBUILD_ENET=off \
             -DBUILD_EXTRAS=on \
             -DBUILD_DEMOS=off \
+            -DBUILD_OPENGL_DEMOS=off \
+            -DBUILD_PYBULLET=off \
             -DBUILD_SHARED_LIBS=off \
-            -DINSTALL_LIBS=off \
-            -DINSTALL_EXTRA_LIBS=off \
-            -DCMAKE_OSX_ARCHITECTURES="i386" \
-            -DCMAKE_CXX_FLAGS="-m32 -arch i386 -mmacosx-version-min=10.6" \
-            -DCMAKE_C_FLAGS="-m32 -arch i386 -mmacosx-version-min=10.6" \
-            -DCMAKE_EXE_LINKER_FLAGS="-m32 -arch i386 -mmacosx-version-min=10.6" \
+            -DBUILD_UNIT_TESTS=off \
+            -DINSTALL_EXTRA_LIBS=on \
+            -DINSTALL_LIBS=on \
+            -DCMAKE_OSX_ARCHITECTURES="i386; x86_64" \
+            -DCMAKE_CXX_FLAGS="-arch i386 -arch x86_64 -mmacosx-version-min=10.11" \
+            -DCMAKE_C_FLAGS="-arch i386 -arch x86_64 -mmacosx-version-min=10.11" \
+            -DCMAKE_EXE_LINKER_FLAGS="-arch i386 -arch x86_64 -mmacosx-version-min=10.11" \
             -DCMAKE_VERBOSE_MAKEFILE="on" \
             -DCMAKE_BUILD_TYPE=Release
 else
-    if [[ "$MACH" == "x86_64" ]] ; then
+    if [[ "$MACH" == "x86_64" ]] 
+    then
         cmake .. -G "Unix Makefiles" \
+                -DBUILD_BULLET2_DEMOS=off \
+                -DBUILD_BULLET3=on \
+                -DBUILD_CLSOCKET=off \
+                -DBUILD_CPU_DEMOS=off \
+                -DBUILD_ENET=off \
                 -DBUILD_EXTRAS=on \
                 -DBUILD_DEMOS=off \
+                -DBUILD_OPENGL_DEMOS=off \
+                -DBUILD_PYBULLET=off \
                 -DBUILD_SHARED_LIBS=off \
-                -DINSTALL_LIBS=on \
+                -DBUILD_UNIT_TESTS=off \
                 -DINSTALL_EXTRA_LIBS=on \
+                -DINSTALL_LIBS=on \
+                -DCMAKE_CXX_FLAGS="-fPIC" \
+                -DCMAKE_BUILD_TYPE=Release
+    elif [[ "$MACH" == "aarch64" ]] 
+    then
+        cmake .. -G "Unix Makefiles" \
+                -DBUILD_BULLET2_DEMOS=off \
+                -DBUILD_BULLET3=on \
+                -DBUILD_CLSOCKET=off \
+                -DBUILD_CPU_DEMOS=off \
+                -DBUILD_ENET=off \
+                -DBUILD_EXTRAS=on \
+		-DBUILD_BULLET_ROBOTICS_GUI_EXTRA=off \
+		-DBUILD_BULLET_ROBOTICS_EXTRA=off \
+                -DBUILD_DEMOS=off \
+                -DBUILD_OPENGL_DEMOS=off \
+                -DBUILD_PYBULLET=off \
+                -DBUILD_SHARED_LIBS=off \
+                -DBUILD_UNIT_TESTS=off \
+		-DENABLE_VHACD=off \
+		-DUSE_GRAPHICAL_BENCHMARK=off \
+		-DBUILD_EGL=off \
+		-DBUILD_OPENGL3_DEMOS=off \
+		-DBUILD_BULLET2_DEMOS=off \
+                -DINSTALL_EXTRA_LIBS=on \
+                -DINSTALL_LIBS=on \
                 -DCMAKE_CXX_FLAGS="-fPIC" \
                 -DCMAKE_BUILD_TYPE=Release
     else
         cmake .. -G "Unix Makefiles" \
+                -DBUILD_BULLET2_DEMOS=off \
+                -DBUILD_BULLET3=on \
+                -DBUILD_CLSOCKET=off \
+                -DBUILD_CPU_DEMOS=off \
+                -DBUILD_ENET=off \
                 -DBUILD_EXTRAS=on \
                 -DBUILD_DEMOS=off \
+                -DBUILD_OPENGL_DEMOS=off \
+                -DBUILD_PYBULLET=off \
                 -DBUILD_SHARED_LIBS=off \
-                -DINSTALL_LIBS=on \
+                -DBUILD_UNIT_TESTS=off \
                 -DINSTALL_EXTRA_LIBS=on \
+                -DINSTALL_LIBS=on \
                 -DCMAKE_BUILD_TYPE=Release
     fi
 fi
@@ -53,8 +103,9 @@ make -j4
 #    Good as it doesn't require admin privilages
 cd "$STARTDIR"
 mkdir -p lib
-cd "${BULLET}/bullet-build"
-cp */*/*.a */*/*/*.a ../../lib
+cd "${BULLET}"
+cp */*/*/*.a ../lib
+#cp */*/*.a */*/*/*.a ../lib
 
 cd "$STARTDIR"
 mkdir -p include
