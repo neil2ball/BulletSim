@@ -10,7 +10,7 @@ For Windows, the steps are:
 
 1) Fetch the latest version from GitHub: https://github.com/bulletphysics/bullet3.
         cd trunk/unmanaged/BulletSim
-        git clone https://github.com/bulletphysics/bullet3 bullet-2
+        git clone --depth 1 https://github.com/bulletphysics/bullet3.git
 
     As of this writing (August 7, 2017), Bullet development is mostly doing
     bug fixes on the v2 branch and new development is happening
@@ -19,7 +19,7 @@ For Windows, the steps are:
     In the mean time, any of the v2.8+ versions should work.
 
 2) Apply all the patches for bullet:
-	cd bullet-2 ; for file in ../*.patch ; do cat $file | patch -p1 ; done
+	cd bullet3 ; for file in ../*.patch ; do cat $file | patch -p1 ; done
 
 3) Build Bullet
 3a) Windows:

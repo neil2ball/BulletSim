@@ -1,18 +1,29 @@
 # Build BulletSim
+#
+# The Bullet physics engine has been previously built and is in the directories IDIR and LDIR
 
-# IDIR = /usr/local/include/bullet
-# LDIR = /usr/local/lib
+TARGETBASE=libBulletSim
+
 IDIR = ./include
 LDIR = ./lib
 
 # the Bullet libraries are linked statically so we don't have to also distribute the shared binaries
-BULLETLIBS = $(LDIR)/libBulletDynamics.a $(LDIR)/libBulletCollision.a $(LDIR)/libLinearMath.a $(LDIR)/libHACD.a
+BULLETLIBS := $(wildcard $(LDIR)/*.a)
  
 #CC = gcc
-CC = /usr/bin/g++
-LD = /usr/bin/g++
-UNAME := $(shell uname)
-UNAMEPROCESSOR := $(shell uname -m)
+#CC = /usr/bin/g++
+#LD = /usr/bin/g++
+CC = /usr/bin/c++
+LD = /usr/bin/c++
+export UNAME := $(shell uname)
+export UNAMEPROCESSOR := $(shell uname -m)
+
+# Version of the bullet engine being statically linked
+export BULLETVERSION := $(shell cat $(IDIR)/VERSION)
+# Version of BulletSim being built and included
+export BULLETSIMVERSION := $(shell cat VERSION)
+
+export BUILDDATE := $(shell date "+%Y%m%d")
 
 # Kludge for building libBulletSim.so with different library dependencies
 #    As of 20130424, 64bit Ubuntu needs to wrap memcpy so it doesn't pull in glibc 2.14.
@@ -25,22 +36,18 @@ endif
 
 # Linux build.
 ifeq ($(UNAME), Linux)
-TARGET = libBulletSim-$(UNAMEPROCESSOR).so
+TARGET = $(TARGETBASE)-$(BULLETSIMVERSION)-$(BULLETVERSION)-$(BUILDDATE)-$(UNAMEPROCESSOR).so
 CFLAGS = -I$(IDIR) -fPIC -g -fpermissive
 LFLAGS = $(WRAPMEMCPY) -shared -Wl,-soname,$(TARGET) -o $(TARGET)
 endif
 
 # OSX build. Builds 32bit dylib on 64bit system. (Need 32bit because Mono is 32bit only).
 ifeq ($(UNAME), Darwin)
-TARGET = libBulletSim.dylib
+TARGET = $(TARGETBASE)-$(BULLETSIMVERSION)-$(BULLETVERSION)-$(BUILDDATE)-universal.dylib
 # CC = clang
 # LD = clang
-#CFLAGS = -m32 -I$(IDIR) -fPIC -g
-#LFLAGS = -m32 -dynamiclib -Wl -o $(TARGET)
-#CFLAGS = -m32 -arch i386 -stdlib=libstdc++ -mmacosx-version-min=10.6 -I$(IDIR) -g 
-#LFLAGS = -v -m32 -arch i386 -std=c++11 -stdlib=libstdc++ -mmacosx-version-min=10.6 -dynamic -o $(TARGET)
-CFLAGS = -arch i386 -arch x86_64 -std=c++11  -O3 -I$(IDIR) -g 
-LFLAGS = -v -dynamiclib -arch i386 -arch x86_64 -o $(TARGET)
+CFLAGS = -arch arm64 -arch x86_64 -O2 -I$(IDIR) -g 
+LFLAGS = -v -dynamiclib -arch arm64 -arch x86_64 -o $(TARGET)
 endif
 
 BASEFILES = API2.cpp BulletSim.cpp
@@ -48,12 +55,13 @@ BASEFILES = API2.cpp BulletSim.cpp
 SRC = $(BASEFILES)
 # SRC = $(wildcard *.cpp)
 
+# This presumes that all .o's in the current directory are the pieces for BulletSim
 BIN = $(patsubst %.cpp, %.o, $(SRC))
-
 
 all: $(TARGET)
 
-$(TARGET) : $(BIN)
+# When building target, we always rebuild the .o files (make sure they match the lib/include dirs)
+$(TARGET) : clean $(BIN)
 	$(LD) $(LFLAGS) $(BIN) $(BULLETLIBS)
 
 %.o: %.cpp
@@ -66,4 +74,7 @@ BulletSim.h: ArchStuff.h APIData.h WorldData.h
 API2.cpp : BulletSim.h
 
 clean:
-	rm -f *.o $(TARGET)
+	rm -f *.o
+
+cleanlibs:
+	rm -f $(wildcard $(TARGETBASE)*)
