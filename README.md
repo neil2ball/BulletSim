@@ -1,4 +1,4 @@
-# BulletSim
+# BulletSim Development Repository
 
 Copy of the C++ wrapper of the [Bullet Physics Engine](https://github.com/bulletphysics/bullet3)
 for the BulletSim physics engine for
