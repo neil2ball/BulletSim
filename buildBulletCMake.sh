@@ -3,8 +3,10 @@
 
 STARTDIR=$(pwd)
 
-UNAME=$(uname)
-MACH=$(uname -m)
+# The UNAME is either "Darwin" or otherwise. Note that env variable overrides
+UNAME=${BULLETUNAME:-$(uname)}
+# The MACH is either 'x86_64', 'aarch64', or assumed generic. Note env variable overrides.
+MACH=${BULLETMACH:-$(uname -m)}
 # Note that this sets BULLETDIR unless there is an environment variable of the same name
 BULLETDIR=${BULLETDIR:-bullet3}
 
@@ -66,7 +68,7 @@ else
                 -DINSTALL_LIBS=ON \
                 -DCMAKE_CXX_FLAGS="-fPIC" \
                 -DCMAKE_BUILD_TYPE=Release
-    elif [[ "$MACH" == "arm64" ]] 
+    elif [[ "$MACH" == "aarch64" ]] 
     then
         echo "=== Running cmake for arch $MACH"
         cmake .. -G "Unix Makefiles" \
@@ -142,7 +144,7 @@ cd "$STARTDIR"
 mkdir -p include
 cd "${BULLETDIR}/src"
 for file in $(find . -name \*.h) ; do
-    xxxx="../../include/$(dirname $file)" 
+    xxxx="${STARTDIR}/include/$(dirname $file)"
     mkdir -p "$xxxx"
     cp "$file" "$xxxx"
 done
@@ -157,13 +159,13 @@ echo "=== Moving .h files from Extras into ../include"
 cd "$STARTDIR"
 cd "${BULLETDIR}/Extras"
 for file in $(find . -name \*.h) ; do
-    xxxx="../../include/$(dirname $file)"
+    xxxx="${STARTDIR}/include/$(dirname $file)"
     mkdir -p "$xxxx"
     cp "$file" "$xxxx"
 done
 echo "=== Moving .inl files from Extras into ../include"
 for file in $(find . -name \*.inl) ; do
-    xxxx="../../include/$(dirname $file)"
+    xxxx="${STARTDIR}/include/$(dirname $file)"
     mkdir -p "$xxxx"
     cp "$file" "$xxxx"
 done

@@ -13,7 +13,7 @@ diff --git a/src/BulletDynamics/Dynamics/btDiscreteDynamicsWorld.cpp b/src/Bulle
 index 48ba8bd..be14294 100755
 --- a/src/BulletDynamics/Dynamics/btDiscreteDynamicsWorld.cpp
 +++ b/src/BulletDynamics/Dynamics/btDiscreteDynamicsWorld.cpp
-@@ -634,6 +634,9 @@ void	btDiscreteDynamicsWorld::updateActivationState(btScalar timeStep)
+@@ -642,6 +642,9 @@ void	btDiscreteDynamicsWorld::updateActivationState(btScalar timeStep)
  					{
  						body->setAngularVelocity(btVector3(0,0,0));
  						body->setLinearVelocity(btVector3(0,0,0));
