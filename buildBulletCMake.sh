@@ -16,6 +16,8 @@ cd "${BULLETDIR}"
 mkdir -p "${BUILDDIR}"
 cd "${BUILDDIR}"
 
+echo "=== Building Bullet in dir ${BULLETDIR} for uname ${UNAME} and arch ${MACH} into ${BUILDDIR}"
+
 if [[ "$UNAME" == "Darwin" ]] ; then
     echo "=== Running cmake for Darwin"
     cmake .. -G "Unix Makefiles" \
