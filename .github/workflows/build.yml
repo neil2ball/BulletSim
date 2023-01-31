@@ -2,12 +2,13 @@
 
 name: BulletSim binaries
 
+env:
+  branch: dotnet6
+
 on:
   push:
     branches: 
-      - master
-
-env:
+      - ${{ branch }}
 
 jobs:
   build:
@@ -26,7 +27,7 @@ jobs:
       - name: git checkout
         uses: actions/checkout@v3
         with:
-          ref: dotnet6
+          ref: ${{ branch }}
           path: bulletsim
 
       - name: download Bullet
