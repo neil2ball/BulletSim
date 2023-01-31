@@ -19,7 +19,7 @@ jobs:
           - os: windows-latest
             codecov: false
 
-    runs-on: ${{ matrix.options.os }}
+    runs-on: ${{ matrix.include.os }}
 
     steps:
       - name: git checkout
