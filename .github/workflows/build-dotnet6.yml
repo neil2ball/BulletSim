@@ -10,13 +10,14 @@ on:
 jobs:
   build:
     strategy:
-      options:
-        - os: ubuntu-latest
-          codecov: false
-        - os: macos-latest
-          codecov: false
-        - os: windows-latest
-          codecov: false
+      matrix: 
+        include:
+          - os: ubuntu-latest
+            codecov: false
+          - os: macos-latest
+            codecov: false
+          - os: windows-latest
+            codecov: false
 
     runs-on: ${{ matrix.options.os }}
 
