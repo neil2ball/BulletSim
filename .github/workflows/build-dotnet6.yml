@@ -11,15 +11,9 @@ jobs:
   build:
     strategy:
       matrix: 
-        include:
-          - os: ubuntu-latest
-            codecov: false
-          - os: macos-latest
-            codecov: false
-          - os: windows-latest
-            codecov: false
+        - os: [ ubuntu-latest, macos-latest, windows-latest ]
 
-    runs-on: ${{ matrix.include.os }}
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: git checkout
