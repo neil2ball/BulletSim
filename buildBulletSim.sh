@@ -20,7 +20,7 @@ UNAME=${UNAME:-$(uname)}
 ARCH=${ARCH:-$(uname -m)}
 
 # Version of the Bullet engine that is being statically linked
-BULLETVERSION=$(cat "${BINCLUDEDIR}/VERSION")
+BULLETVERSION=$(cat "${BLIBDIR}/VERSION")
 # Version of the BulletSim glue that is being built and included
 BULLETSIMVERSION=$(cat "VERSION")
 
