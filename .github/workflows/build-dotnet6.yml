@@ -28,14 +28,9 @@ jobs:
           path: bulletsim
 
       - name: checkout Bullet
-        uses: actions/checkout@v3
-        with:
-          repository: bulletphysics/bullet3
-          path: bulletsim
-          clean: false
-#        run: |
-#          cd bulletsim
-#          git clone --depth=1 https://github.com/bulletphysics/bullet3.git
+        run: |
+          cd bulletsim
+          git clone --depth=1 https://github.com/bulletphysics/bullet3.git
 
       - name: apply patches to Bullet
         run: |
