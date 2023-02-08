@@ -1,0 +1,68 @@
+# Buid BulletSim binaries from the latest Bullet and BulletSim glue sources
+
+# https://cristianadam.eu/20191222/using-github-actions-with-c-plus-plus-and-cmake/
+# uses cmake as shell to do commands in both environments
+
+name: BulletSim binaries
+
+on:
+  push:
+    branches: 
+      - workflow2
+
+jobs:
+  build:
+    strategy:
+      matrix: 
+        # os: [ ubuntu-latest, macos-latest, windows-latest ]
+        include:
+          - os: windows-latest
+            name: "BulletSim binary build for Windows"
+            build_type: Release
+            ext: dll
+            script: bat
+            artif: binary-windows
+
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.name }}
+
+    steps:
+      - name: git checkout
+        uses: actions/checkout@v3
+        with:
+          ref: workflow2
+          path: bulletsim
+
+      - name: checkout Bullet
+        uses: actions/checkout@v3
+        with:
+          repository: bulletphysics/bullet3
+          path: bulletsim/bullet3
+
+      - name: apply patches to Bullet
+        run: |
+          cd bulletsim/bullet3
+          git apply ../00*
+
+      - name: install CMake
+        uses: jwlawson/actions-setup-cmake@v1.13
+
+      - name: build Bullet physics engine for Windows
+        run: |
+          cd bulletsim
+          ./buildBulletCMake.${{ matrix.script }}
+
+      - name: build BulletSim
+        run: |
+          cd bulletsim
+          ./buildBulletSim.${{ matrix.script }}
+
+      - name: Upload built image
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.artif }}
+          path: bulletsim/*.${{ matrix.ext }}
+          if-no-files-found: error
+
+# vim: tabstop=2 shiftwidth=2 autoindent expandtab
+
