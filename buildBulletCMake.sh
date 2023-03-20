@@ -45,6 +45,28 @@ if [[ "$UNAME" == "Darwin" ]] ; then
                 -DCMAKE_EXE_LINKER_FLAGS="-arch arm64 -arch x86_64" \
                 -DCMAKE_VERBOSE_MAKEFILE="on" \
                 -DCMAKE_BUILD_TYPE=Release
+elif [[ "$UNAME" =~ "MINGW64*" ]] ; then
+    cmake .. -G "Visual Studio 17 2022" \
+            -DBUILD_BULLET3=ON \
+            -DBUILD_EXTRAS=ON \
+                -DBUILD_INVERSE_DYNAMIC_EXTRA=OFF \
+                -DBUILD_BULLET_ROBOTICS_GUI_EXTRA=OFF \
+                -DBUILD_BULLET_ROBOTICS_EXTRA=OFF \
+                -DBUILD_OBJ2SDF_EXTRA=OFF \
+                -DBUILD_SERIALIZE_EXTRA=OFF \
+                -DBUILD_CONVEX_DECOMPOSITION_EXTRA=ON \
+                -DBUILD_HACD_EXTRA=ON \
+                -DBUILD_GIMPACTUTILS_EXTRA=OFF \
+            -DBUILD_CPU_DEMOS=OFF \
+            -DBUILD_BULLET2_DEMOS=OFF \
+            -DBUILD_ENET=OFF \
+            -DBUILD_PYBULLET=OFF \
+            -DBUILD_UNIT_TESTS=OFF \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DINSTALL_EXTRA_LIBS=ON \
+            -DINSTALL_LIBS=ON \
+            -DCMAKE_CXX_FLAGS="-fPIC" \
+            -DCMAKE_BUILD_TYPE=Release
 else
     if [[ "$MACH" == "x86_64" ]] 
     then
@@ -123,7 +145,20 @@ else
     fi
 fi
 
-make -j4
+# DEBUG DEBUG
+echo "=== $(pwd)"
+ls -l
+echo "=== END"
+# END DEBUG DEBUG
+
+if [[ -e Makefile ]] ; then
+    echo "=== Building Makefile"
+    make -j4
+fi
+if [[ -e "BULLET_PHYSICS.sln" ]] ; then
+    echo "=== Building BULLET_PHYSICS.sln"
+    dotnet build -c Release BULLET_PHYSICS.sln
+fi
 
 # make install
 

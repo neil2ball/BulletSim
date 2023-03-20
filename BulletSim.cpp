@@ -39,7 +39,7 @@
 #if defined(__linux__) || defined(__APPLE__) 
 #include "HACD/hacdHACD.h"
 #elif defined(_WIN32) || defined(_WIN64)
-#include "../extras/HACD/hacdHACD.h"
+#include "HACD/hacdHACD.h"
 #else
 #error "Platform type not understood."
 #endif
