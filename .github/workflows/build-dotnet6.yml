@@ -1,6 +1,6 @@
 # Buid BulletSim binaries from the latest Bullet and BulletSim glue sources
 
-name: BulletSim binaries
+name: BulletSim Linux binaries
 
 on:
   push:
@@ -14,11 +14,18 @@ jobs:
         # os: [ ubuntu-latest, macos-latest, windows-latest ]
         include:
           - os: ubuntu-20.04
+            osclass: ubuntu
+            name: "BulletSim binary build for Ubuntu"
+            build_type: Release
             ext: so
           - os: macos-12
+            osclass: macos
+            name: "BulletSim binary build for MacOS"
+            build_type: Release
             ext: dylib
 
     runs-on: ${{ matrix.os }}
+    name: ${{ matrix.name }}
 
     steps:
       - name: git checkout
@@ -28,14 +35,38 @@ jobs:
           path: bulletsim
 
       - name: checkout Bullet
-        run: |
-          cd bulletsim
-          git clone --depth=1 https://github.com/bulletphysics/bullet3.git
+        uses: actions/checkout@v3
+        with:
+          repository: bulletphysics/bullet3
+          path: bulletsim/bullet3
 
       - name: apply patches to Bullet
         run: |
           cd bulletsim/bullet3
           for file in ../00*.patch ; do cat $file | patch -p1 ; done
+
+      - name: set env vars based on sources
+        run: |
+          echo "BuildDate=$(date +%Y%m%d)" >> $GITHUB_ENV
+          cd bulletsim
+          echo "BulletSimVersion=$(cat VERSION)" >> $GITHUB_ENV
+          echo "BulletSimGitVersion=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          echo "BulletSimGitVersionShort=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+          cd bullet3
+          echo "BulletVersion=$(cat VERSION)" >> $GITHUB_ENV
+          echo "BulletGitVersion=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          echo "BulletGitVersionShort=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+
+      - name: create BulletSimVersionInfo file
+        run: |
+          cd bulletsim
+          echo "BuildDate=$BuildDate" > BulletSimVersionInfo
+          echo "BulletSimVersion=$BulletSimVersion" >> BulletSimVersionInfo
+          echo "BulletSimGitVersion=$BulletSimGitVersion" >> BulletSimVersionInfo
+          echo "BulletSimGitVersionShort=$BulletSimGitVersionShort" >> BulletSimVersionInfo
+          echo "BulletVersion=$BulletVersion" >> BulletSimVersionInfo
+          echo "BulletGitVersion=$BulletGitVersion" >> BulletSimVersionInfo
+          echo "BulletGitVersionShort=$BulletGitVersionShort" >> BulletSimVersionInfo
 
       - name: build Bullet physics engine
         run: |
@@ -48,10 +79,13 @@ jobs:
           ./buildBulletSim.sh
 
       - name: Upload built image
+        if: success()
         uses: actions/upload-artifact@v3
         with:
-          name: binary-${{ matrix.os }}
-          path: bulletsim/*.${{ matrix.ext }}
+          name: BulletSim-${{ matrix.osclass }}-${{ env.BuildDate }}
+          path: |
+            bulletsim/*.${{ matrix.ext }}
+            bulletsim/BulletSimVersionInfo
           if-no-files-found: error
 
 # vim: tabstop=2 shiftwidth=2 autoindent expandtab
