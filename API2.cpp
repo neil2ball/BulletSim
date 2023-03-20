@@ -35,8 +35,13 @@
 
 #include <map>
 
-#define DLL_EXPORT __declspec( dllexport )
-#define DLL_IMPORT __declspec( dllimport )
+#elif defined(_WIN32) || defined(_WIN64)
+    #define DLL_EXPORT __declspec( dllexport )
+    #define DLL_IMPORT __declspec( dllimport )
+#else
+    #define DLL_EXPORT
+    #define DLL_IMPORT
+#endif
 
 #ifdef __cplusplus
     #define EXTERN_C extern "C"
