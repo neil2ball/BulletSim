@@ -35,7 +35,7 @@
 
 #include <map>
 
-#elif defined(_WIN32) || defined(_WIN64)
+#if defined(_WIN32) || defined(_WIN64)
     #define DLL_EXPORT __declspec( dllexport )
     #define DLL_IMPORT __declspec( dllimport )
 #else
