@@ -57,7 +57,8 @@
 // #define USEVHACD 1
 
 // TODO: find a way to build this
-static char BulletSimVersionString[] = "v0003";
+// static char BulletSimVersionString[] = "v0003";
+static char BulletSimVersionString[] = "" #BULLETSIMVERSION "," #BULLETVERSION "";
 
 // Helper method to determine if an object is phantom or not
 static bool IsPhantom(const btCollisionObject* obj)

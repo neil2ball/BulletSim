@@ -35,20 +35,22 @@ else
     WRAPMEMCPY=
 fi
 
+# Pass version information into compilations as C++ variables
+VERSIONCFLAGS="-D BULLETVERSION=$BULLETVERSION -D BULLETSIMVERSION=$BULLETSIMVERSION"
 case $UNAME in
     "Linux")
         TARGET=${TARGETBASE}-${BULLETVERSION}-${BUILDDATE}-${ARCH}.so
-        CFLAGS="-I${BINCLUDEDIR} -fPIC -g -fpermissive"
+        CFLAGS="-I${BINCLUDEDIR} -fPIC -g -fpermissive ${VERSIONCFLAGS}"
         LFLAGS="${WRAPMEMCPY} -shared -Wl,-soname,${TARGET} -o ${TARGET}"
         ;;
     "Darwin")
         TARGET=${TARGETBASE}-${BULLETVERSION}-${BUILDDATE}-universal.dylib
-        CFLAGS="-arch arm64 -arch x86_64 -O2 -I${BINCLUDEDIR} -g"
+        CFLAGS="-arch arm64 -arch x86_64 -O2 -I${BINCLUDEDIR} -g ${VERSIONCFLAGS}"
         LFLAGS="-v -dynamiclib -arch arm64 -arch x86_64 -o ${TARGET}"
         ;;
     *)
         TARGET=${TARGETBASE}-${BULLETVERSION}-${BUILDDATE}-${ARCH}.so
-        CFLAGS="-I${IDIR} -fPIC -g -fpermissive"
+        CFLAGS="-I${IDIR} -fPIC -g -fpermissive ${VERSIONCFLAGS}"
         LFLAGS="${WRAPMEMCPY} -shared -Wl,-soname,${TARGET} -o ${TARGET}"
         ;;
 esac
