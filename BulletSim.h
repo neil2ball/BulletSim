@@ -56,9 +56,13 @@
 // If defined, use the external VHACD library
 // #define USEVHACD 1
 
-// TODO: find a way to build this
-// static char BulletSimVersionString[] = "v0003";
-static char BulletSimVersionString[] = "" #BULLETSIMVERSION "," #BULLETVERSION "";
+// Build version string of format BULLETENGINEVERSION,BULLETSIMVERSION ("3.25,1,3")
+// This expects the version information to be passed in as defined variables (-D BULLETVERSION=...)
+//   If the version variables are not defined, the version string is just a comma.
+//   This uses the "#" pre-processor operator to stringify the variable and that adjacent strings are concatinated.
+#define MACRO_AS_STRING1(X) #X
+#define MACRO_AS_STRING(X) MACRO_AS_STRING1(X)
+static std::string BulletSimVersionString2 = MACRO_AS_STRING(BULLETVERSION) "," MACRO_AS_STRING(BULLETSIMVERSION);
 
 // Helper method to determine if an object is phantom or not
 static bool IsPhantom(const btCollisionObject* obj)

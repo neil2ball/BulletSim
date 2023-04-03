@@ -57,12 +57,12 @@ EXTERN_C DLL_EXPORT void DumpConstraint2(BulletSim* sim, btTypedConstraint* cons
 #define TERRAIN_MIN_THICKNESS (0.2)
 
 /**
- * Returns a string that identifies the version of the BulletSim.dll
- * @return static string of version information
+ * Returns a pointer to a string that identifies the version of the BulletSim.dll
+ * @return pointer to zero terminated static string of format BULLETENGINEVERSION,BULLETSIMVERSION ("3.25,1.3")
  */
 EXTERN_C DLL_EXPORT char* GetVersion2()
 {
-	return &BulletSimVersionString[0];
+	return BulletSimVersionString.const_pointer;
 }
 
 // DEBUG DEBUG DEBUG =========================================================================================
