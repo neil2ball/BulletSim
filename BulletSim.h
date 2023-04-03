@@ -62,7 +62,7 @@
 //   This uses the "#" pre-processor operator to stringify the variable and that adjacent strings are concatinated.
 #define MACRO_AS_STRING1(X) #X
 #define MACRO_AS_STRING(X) MACRO_AS_STRING1(X)
-static std::string BulletSimVersionString2 = MACRO_AS_STRING(BULLETVERSION) "," MACRO_AS_STRING(BULLETSIMVERSION);
+static std::string BulletSimVersionString = MACRO_AS_STRING(BULLETVERSION) "," MACRO_AS_STRING(BULLETSIMVERSION);
 
 // Helper method to determine if an object is phantom or not
 static bool IsPhantom(const btCollisionObject* obj)
