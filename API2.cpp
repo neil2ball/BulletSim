@@ -60,7 +60,7 @@ EXTERN_C DLL_EXPORT void DumpConstraint2(BulletSim* sim, btTypedConstraint* cons
  * Returns a pointer to a string that identifies the version of the BulletSim.dll
  * @return pointer to zero terminated static string of format BULLETENGINEVERSION,BULLETSIMVERSION ("3.25,1.3")
  */
-EXTERN_C DLL_EXPORT char* GetVersion2()
+EXTERN_C DLL_EXPORT const char* GetVersion2()
 {
 	return BulletSimVersionString.c_str();
 }
