@@ -62,7 +62,7 @@ EXTERN_C DLL_EXPORT void DumpConstraint2(BulletSim* sim, btTypedConstraint* cons
  */
 EXTERN_C DLL_EXPORT char* GetVersion2()
 {
-	return BulletSimVersionString.c_str;
+	return BulletSimVersionString.c_str();
 }
 
 // DEBUG DEBUG DEBUG =========================================================================================
