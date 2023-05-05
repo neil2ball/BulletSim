@@ -16,6 +16,8 @@ jobs:
             osclass: win
             name: "BulletSim binary build for Windows"
             build_type: Release
+            scriptext: bat
+            scriptext2: ps1
 
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.name }}
@@ -72,18 +74,15 @@ jobs:
         with:
           dotnet-version: '6.0.x'
 
-      - name: Setup MSVC
-        uses: microsoft/setup-msbuild@v1.3.1
-
       - name: build Bullet build files
         run: |
           cd bulletsim
-          ./buildBulletCMake.ps1
+          ./buildBulletCMake.${{ matrix.scriptext2 }}
 
       - name: build BulletSim
         run: |
           cd bulletsim
-          ./buildBulletSim.bat
+          ./buildBulletSim.${{ matrix.scriptext }}
 
       - name: move built files into destination directory structure
         shell: bash

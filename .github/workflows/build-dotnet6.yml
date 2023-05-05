@@ -18,11 +18,15 @@ jobs:
             name: "BulletSim binary build for Ubuntu"
             build_type: Release
             ext: so
+            scriptext: sh
+            scriptext2: sh
           - os: macos-12
             osclass: macos
             name: "BulletSim binary build for MacOS"
             build_type: Release
             ext: dylib
+            scriptext: sh
+            scriptext2: sh
 
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.name }}
@@ -41,11 +45,13 @@ jobs:
           path: bulletsim/bullet3
 
       - name: apply patches to Bullet
+        shell: bash
         run: |
           cd bulletsim/bullet3
-          for file in ../00*.patch ; do cat $file | patch -p1 ; done
+          for file in ../00*.patch ; do echo "====== $file" ; git apply $file ; done
 
       - name: set env vars based on sources
+        shell: bash
         run: |
           echo "BuildDate=$(date +%Y%m%d)" >> $GITHUB_ENV
           cd bulletsim
@@ -58,6 +64,7 @@ jobs:
           echo "BulletGitVersionShort=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
 
       - name: create BulletSimVersionInfo file
+        shell: bash
         run: |
           cd bulletsim
           echo "BuildDate=$BuildDate" > BulletSimVersionInfo
@@ -71,14 +78,14 @@ jobs:
       - name: build Bullet physics engine
         run: |
           cd bulletsim
-          BULLETDIR=bullet3 ./buildBulletCMake.sh
+          BULLETDIR=bullet3 ./buildBulletCMake.${{ matrix.scriptext }}
 
       - name: build BulletSim
         run: |
           cd bulletsim
-          ./buildBulletSim.sh
+          ./buildBulletSim.${{ matrix.scriptext }}
 
-      - name: Upload built image
+      - name: Upload built files
         if: success()
         uses: actions/upload-artifact@v3
         with:
