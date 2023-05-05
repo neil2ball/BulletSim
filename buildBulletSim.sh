@@ -44,8 +44,10 @@ case $UNAME in
         LFLAGS="${WRAPMEMCPY} -shared -Wl,-soname,${TARGET} -o ${TARGET}"
         ;;
     "Darwin")
+        CC=gcc
+        LD=g++
         TARGET=${TARGETBASE}-${BULLETVERSION}-${BUILDDATE}-universal.dylib
-        CFLAGS="-arch arm64 -arch x86_64 -O2 -I${BINCLUDEDIR} -g ${VERSIONCFLAGS}"
+        CFLAGS="-arch arm64 -arch x86_64 -O3 -I${BINCLUDEDIR} -g ${VERSIONCFLAGS}"
         LFLAGS="-v -dynamiclib -arch arm64 -arch x86_64 -o ${TARGET}"
         ;;
     *)
