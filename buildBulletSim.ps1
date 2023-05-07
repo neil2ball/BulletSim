@@ -1,6 +1,6 @@
 
-$BULLETVERSION = Get-Content -Path lib\VERSION
-$BULLETSIMVERSION = Get-Content -Path VERSION
+$BULLETVERSION = Get-Content -Path .\lib\VERSION
+$BULLETSIMVERSION = Get-Content -Path .\VERSION
 $CL=/D BULLETVERSION=$BULLETVERSION /D BULLETSIMVERSION=$BULLETSIMVERSION
 
 msbuild -p:Configuration=Release BulletSim.sln
