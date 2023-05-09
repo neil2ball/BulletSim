@@ -50,3 +50,6 @@ Get-ChildItem -Path bullet3\Extras\* -Include *.h,*.inl -Recurse | ForEach-Objec
     Copy-Item $_ -Destination $xxxx -Force
 }
 
+# Copy Bullet's VERSION file into lib/ so BulletSim can reference it
+Copy-Item -Path bullet3\VERSION -Destination lib
+
