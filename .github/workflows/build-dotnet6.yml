@@ -81,20 +81,20 @@ jobs:
 
       # Add CMake for Windows build
       - name: install CMake
+        if: matrix.osclass == 'win'
         uses: jwlawson/actions-setup-cmake@v1.13
-        if: matrix.osclass == "win"
 
       # Add Dotnet for Windows build
       - name: Setup Dotnet
+        if: matrix.osclass == 'win'
         uses: actions/setup-dotnet@v2
-        if: matrix.osclass == "win"
         with:
           dotnet-version: '6.0.x'
 
       # Add MSVC libraries for Windows build
       - name: Setup MSVC
+        if: matrix.osclass == 'win'
         uses: microsoft/setup-msbuild@v1.3.1
-        if: matrix.osclass == "win"
 
       - name: build Bullet physics engine
         run: |
@@ -108,8 +108,8 @@ jobs:
 
       # Dotnet build puts binaries in sub-dirs so move them to a standard place
       - name: move built files into destination directory structure
+        if: matrix.osclass == 'win'
         shell: bash
-        if: matrix.osclass == "win"
         run: |
           mkdir -p lib64
           cp bulletsim/BulletSimVersionInfo lib64/
