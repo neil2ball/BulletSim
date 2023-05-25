@@ -19,14 +19,18 @@ jobs:
             build_type: Release
             ext: so
             scriptext: sh
-            scriptext2: sh
           - os: macos-12
             osclass: macos
             name: "BulletSim binary build for MacOS"
             build_type: Release
             ext: dylib
             scriptext: sh
-            scriptext2: sh
+          - os: windows-latest
+            osclass: win
+            name: "BulletSim binary build for Windows"
+            build_type: Release
+            ext: dll
+            scriptext: ps1
 
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.name }}
@@ -75,15 +79,44 @@ jobs:
           echo "BulletGitVersion=$BulletGitVersion" >> BulletSimVersionInfo
           echo "BulletGitVersionShort=$BulletGitVersionShort" >> BulletSimVersionInfo
 
+      # Add CMake for Windows build
+      - name: install CMake
+        uses: jwlawson/actions-setup-cmake@v1.13
+        if: matrix.osclass == "win"
+
+      # Add Dotnet for Windows build
+      - name: Setup Dotnet
+        uses: actions/setup-dotnet@v2
+        if: matrix.osclass == "win"
+        with:
+          dotnet-version: '6.0.x'
+
+      # Add MSVC libraries for Windows build
+      - name: Setup MSVC
+        uses: microsoft/setup-msbuild@v1.3.1
+        if: matrix.osclass == "win"
+
       - name: build Bullet physics engine
         run: |
           cd bulletsim
-          BULLETDIR=bullet3 ./buildBulletCMake.${{ matrix.scriptext }}
+          ./buildBulletCMake.${{ matrix.scriptext }}
 
       - name: build BulletSim
         run: |
           cd bulletsim
           ./buildBulletSim.${{ matrix.scriptext }}
+
+      # Dotnet build puts binaries in sub-dirs so move them to a standard place
+      - name: move built files into destination directory structure
+        shell: bash
+        if: matrix.osclass == "win"
+        run: |
+          mkdir -p lib64
+          cp bulletsim/BulletSimVersionInfo lib64/
+          cp bulletsim/x64/${{ matrix.build_type }}/BulletSim.dll lib64/
+          cp bulletsim/x64/${{ matrix.build_type }}/BulletSim.lib lib64/
+          cp bulletsim/x64/${{ matrix.build_type }}/BulletSim.pdb lib64/
+
 
       - name: Upload built files
         if: success()
