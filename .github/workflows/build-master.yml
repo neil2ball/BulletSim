@@ -5,7 +5,7 @@ name: BulletSim Linux binaries
 on:
   push:
     branches: 
-      - dotnet6
+      - master
 
 jobs:
   build:
