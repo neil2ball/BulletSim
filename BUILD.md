@@ -41,13 +41,21 @@ editing a `.config` file.
 
 # BUILDING
 
-The file `makeBullets.sh` is a script that encompasses these steps.
+This "official" build scripts are called from `.github/workflows/build-dotnet6.yml`
+which builds all the pieces using the Github action system.
+
+For Linux, the script `makeBullets.sh` has the following build steps captured
+in one script.
+
+To build by hand, several scripts that are used in `build.yml`
+are available. This builds the latest version of BulletSim with the latest
+version of the Bullet physics engine.
 
 1) Fetch the latest version from GitHub: https://github.com/bulletphysics/bullet3.
 
 ```
     cd trunk/unmanaged/BulletSim
-    git clone --depth 1 https://github.com/bulletphysics/bullet3.git
+    git clone --depth 1 --single-branch https://github.com/bulletphysics/bullet3.git
 ```
 
 2) Apply all the patches for bullet:
@@ -67,19 +75,16 @@ and patching the 2.86 version of Bullet.
 
   a) Windows:
 
-    <b>Windows not done yet</b>
-    <strike>
-    The Bullet distribution has an instance of PreMake (https://premake.github.io/)
-    to build the Visual Studio project files. 
-    The script buildBulletVS.bat will call premake and generate the project files.
-    As of August 2017, premake version 4 worked but would only generate for VS2010 (v100).
-    I build the BulletSim libraries with VS2012 (v110) for downward compatibility.
-    I let VS2012 upgrade the VS2010 project files for VS2012.
+    Install CMake for Windows.
 
-    Once the project files have been built, open
-    "bullet-2/build3/vs2010/0_Bullet3Solution.sln" with VS2012
-    and do a batch compile for a Release version for 'Win32' and 'x64'.
-    </strike>
+    `buildBulletCMake.ps1` builds the Bullet physics engine. Note that this
+    is a PowerShell script.
+
+    If one can not install `CMake` but has Visual Studio, `buildBulletVS.bat` will
+    build `bullet3/build3/vs2010/0Bullet3Solution.sln` which can be used by 
+    any modern Visual Studio to build the Bullet physics engine.
+    Note that after this step, the Bullet physics engine binaries will be in
+    the `lib` directory and the include files must be copied into `include/`.
 
   b) Linux and IOS:
     
@@ -94,21 +99,25 @@ and patching the 2.86 version of Bullet.
 4) Build BulletSim
 
   a) Windows:
-    <b>Windows not done yet</b>
-    <strike>
-    Use VS2012 to open "BulletSim.sln". Build Release version for 'Win32'
-    and 'x64'. The resulting DLLs will be in "Release/BulletSim.dll"
-    and "x64/Release/BulletSim.dll". These files are copied to
-    "bin/lib32/BulletSim.dll" and "bin/lib64/BulletSim.dll" in the
-    OpenSimulator execution tree.
-    </strike>
+
+    Generate version file information:
+
+```
+    bash buildVersionInfo.sh
+```
+
+    Build BulletSim:
+
+```
+    .\buildBulletSim.ps1
+```
 
   b) Linux and IOS:
 
     Run BulletSim compile and link script:
 
 ```
-    ./makeBulletSim.sh
+    ./buildBulletSim.sh
 ```
 
     This builds a file with a name like: `libBulletSim-3.25-20230111-x86_64.so`.

@@ -12,7 +12,7 @@
 # This also applies the BulletSim patches to the Bullet sources.
 
 # Set these values to 'yes' or 'no' to enable/disable fetching and building
-FETCHBULLETSOURCES=${FETCHBULLETSOURCES:-yes}
+FETCHBULLETSOURCES=${FETCHBULLETSOURCES:-no}
 BUILDBULLET2=${BUILDBULLET2:-no}    # usually don't need the old version
 BUILDBULLET3=${BUILDBULLET3:-yes}
 
@@ -51,6 +51,29 @@ if [[ "$FETCHBULLETSOURCES" == "yes" ]] ; then
 fi
 
 cd "$BASE"
+
+echo "=== Setting environment variables"
+export BuildDate=$(date +%Y%m%d)
+export BulletSimVersion=$(cat VERSION)
+export BulletSimGitVersion=$(git rev-parse HEAD)
+export BulletSimGitVersionShort=$(git rev-parse --short HEAD)
+cd bullet3
+export BulletVersion=$(cat VERSION)
+export BulletGitVersion=$(git rev-parse HEAD)
+export BulletGitVersionShort=$(git rev-parse --short HEAD)
+
+echo "=== Creating version information file"
+cd "$BASE"
+rm BulletSimVersionInfo
+touch BulletSimVersionInfo
+echo "BuildDate=$BuildDate" > BulletSimVersionInfo
+echo "BulletSimVersion=$BulletSimVersion" >> BulletSimVersionInfo
+echo "BulletSimGitVersion=$BulletSimGitVersion" >> BulletSimVersionInfo
+echo "BulletSimGitVersionShort=$BulletSimGitVersionShort" >> BulletSimVersionInfo
+echo "BulletVersion=$BulletVersion" >> BulletSimVersionInfo
+echo "BulletGitVersion=$BulletGitVersion" >> BulletSimVersionInfo
+echo "BulletGitVersionShort=$BulletGitVersionShort" >> BulletSimVersionInfo
+cat BulletSimVersionInfo
 
 echo "=== removing libBulletSim-*"
 rm libBulletSim-*.so
