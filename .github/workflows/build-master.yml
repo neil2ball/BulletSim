@@ -123,6 +123,7 @@ jobs:
         shell: bash
         run: |
           mkdir built
+          cp bulletsim/BulletSimVersionInfo built/
           cp bulletsim/*.${{ matrix.ext }} built/
 
 
@@ -131,7 +132,7 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: BulletSim-${{ matrix.osclass }}-${{ env.BuildDate }}
-          path: bulletsim/built/*
+          path: built/*
           if-no-files-found: error
 
 # vim: tabstop=2 shiftwidth=2 autoindent expandtab
