@@ -107,15 +107,23 @@ jobs:
           ./buildBulletSim.${{ matrix.scriptext }}
 
       # Dotnet build puts binaries in sub-dirs so move them to a standard place
-      - name: move built files into destination directory structure
+      - name: move dotnet built files into 'built' directory
         if: matrix.osclass == 'win'
         shell: bash
         run: |
-          mkdir -p lib64
-          cp bulletsim/BulletSimVersionInfo lib64/
-          cp bulletsim/x64/${{ matrix.build_type }}/BulletSim.dll lib64/
-          cp bulletsim/x64/${{ matrix.build_type }}/BulletSim.lib lib64/
-          cp bulletsim/x64/${{ matrix.build_type }}/BulletSim.pdb lib64/
+          mkdir built
+          cp bulletsim/BulletSimVersionInfo built/
+          cp bulletsim/x64/${{ matrix.build_type }}/BulletSim.dll built/
+          cp bulletsim/x64/${{ matrix.build_type }}/BulletSim.lib built/
+          cp bulletsim/x64/${{ matrix.build_type }}/BulletSim.pdb built/
+
+      # Other targets just build the binaries
+      - name: move non-dotnet built files into 'built' directory
+        if: matrix.osclass != 'win'
+        shell: bash
+        run: |
+          mkdir built
+          cp bulletsim/*.${{ matrix.ext }} built/
 
 
       - name: Upload built files
@@ -123,9 +131,7 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: BulletSim-${{ matrix.osclass }}-${{ env.BuildDate }}
-          path: |
-            bulletsim/*.${{ matrix.ext }}
-            bulletsim/BulletSimVersionInfo
+          path: bulletsim/built/*
           if-no-files-found: error
 
 # vim: tabstop=2 shiftwidth=2 autoindent expandtab
