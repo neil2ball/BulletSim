@@ -39,7 +39,7 @@ jobs:
       - name: git checkout
         uses: actions/checkout@v3
         with:
-          ref: dotnet6
+          ref: master
           path: bulletsim
 
       - name: checkout Bullet
