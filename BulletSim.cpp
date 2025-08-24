@@ -58,12 +58,40 @@ extern "C" void DumpActivationInfo2(BulletSim* sim);
 extern ContactAddedCallback gContactAddedCallback;
 extern btScalar gContactBreakingThreshold;
 
+// Constants for reasonable bounds validation
+const int MAX_REASONABLE_INDICES = 1000000;
+const int MAX_REASONABLE_VERTICES = 1000000;
+const int MAX_REASONABLE_HULLS = 1000;
+
 BulletSim::BulletSim(btScalar maxX, btScalar maxY, btScalar maxZ)
+    : m_broadphase(nullptr),
+      m_dispatcher(nullptr),
+      m_solver(nullptr),
+      m_collisionConfiguration(nullptr),
+      m_gpuPipeline(nullptr),
+      m_gpuBroadphase(nullptr),
+      m_gpuNarrowphase(nullptr),
+      m_openclContext(nullptr),
+      m_openclQueue(nullptr),
+      m_openclDevice(nullptr),
+      m_dumpStatsCount(0),
+      m_maxUpdatesPerFrame(0),
+      m_updatesThisFrameArray(nullptr),
+      m_collidersThisFrameArray(nullptr),
+      maxCollisionsPerFrame(0),
+      collisionsThisFrame(0),
+      m_worldData() // Explicitly initialize WorldData if it has a constructor
 {
 	bsDebug_Initialize();
 
 	// Make sure structures that will be created in initPhysics are marked as not created
-	m_worldData.dynamicsWorld = NULL;
+	m_worldData.dynamicsWorld = nullptr;
+	m_worldData.gpuPipeline = nullptr;
+	m_worldData.gpuBroadphase = nullptr;
+	m_worldData.gpuNarrowphase = nullptr;
+	m_worldData.openclContext = nullptr;
+	m_worldData.openclQueue = nullptr;
+	m_worldData.openclDevice = nullptr;
 
 	m_worldData.sim = this;
 
@@ -373,10 +401,13 @@ int BulletSim::PhysicsStep2(btScalar timeStep, int maxSubSteps, btScalar fixedTi
 			WorldData::UpdatesThisFrameMapType::const_iterator it = m_worldData.updatesThisFrame.begin(); 
 			for (; it != m_worldData.updatesThisFrame.end(); it++)
 			{
-				m_updatesThisFrameArray[updates] = *(it->second);
-				updates++;
-				if (updates >= m_maxUpdatesPerFrame) 
+				if (updates < m_maxUpdatesPerFrame) {
+					m_updatesThisFrameArray[updates] = *(it->second);
+					updates++;
+				} else {
+					m_worldData.BSLog("WARNING: Exceeded max updates per frame (%d)", m_maxUpdatesPerFrame);
 					break;
+				}
 			}
 			m_worldData.updatesThisFrame.clear();
 		}
@@ -415,7 +446,7 @@ void BulletSim::RecordCollision(const btCollisionObject* objA, const btCollision
 		contactNormal = -contactNormal;
 	}
 
-	// m_worldData.BSLog("Collision: idA=%d, idB=%d, contact=<%f,%f,%f>", idA, idB, contact.getX(), contact.getY(), contact.getZ());
+	// m_worldData.BSLog("Collision: idA=%d, idB=%d, contact=<%f,%f,%f>", idA, idB, contact.getX(), contact.getY(), contact.getZ()); //DEBUG DEBUG
 
 	// Create a unique ID for this collision from the two colliding object IDs
 	// We check for duplicate collisions between the two objects because
@@ -432,14 +463,18 @@ void BulletSim::RecordCollision(const btCollisionObject* objA, const btCollision
 	{
 		m_collidersThisFrame.insert(collisionID);
 
-		CollisionDesc cDesc;
-		cDesc.aID = idA;
-		cDesc.bID = idB;
-		cDesc.point = contact;
-		cDesc.normal = contactNormal;
-		cDesc.penetration = penetration;
-		m_collidersThisFrameArray[collisionsThisFrame] = cDesc;
-		collisionsThisFrame++;
+		if (collisionsThisFrame < maxCollisionsPerFrame) {
+			CollisionDesc cDesc;
+			cDesc.aID = idA;
+			cDesc.bID = idB;
+			cDesc.point = contact;
+			cDesc.normal = contactNormal;
+			cDesc.penetration = penetration;
+			m_collidersThisFrameArray[collisionsThisFrame] = cDesc;
+			collisionsThisFrame++;
+		} else {
+			m_worldData.BSLog("WARNING: Exceeded max collisions per frame (%d)", maxCollisionsPerFrame);
+		}
 	}
 }
 
@@ -498,70 +533,127 @@ void BulletSim::RecordGhostCollisions(btPairCachingGhostObject* obj)
 
 btCollisionShape* BulletSim::CreateMeshShape2(int indicesCount, int* indices, int verticesCount, float* vertices)
 {
-	// We must copy the indices and vertices since the passed memory is released when this call returns.
-	btIndexedMesh indexedMesh;
-	int* copiedIndices = new int[indicesCount];
-	__wrap_memcpy(copiedIndices, indices, indicesCount * sizeof(int));
-	int numVertices = verticesCount * 3;
-	float* copiedVertices = new float[numVertices];
-	__wrap_memcpy(copiedVertices, vertices, numVertices * sizeof(float));
+    // Validate input parameters
+    if (indicesCount <= 0 || verticesCount <= 0 || !indices || !vertices) {
+        m_worldData.BSLog("CreateMeshShape2: Invalid parameters - indicesCount=%d, verticesCount=%d", 
+                         indicesCount, verticesCount);
+        return nullptr;
+    }
+    
+    // Additional validation
+    if (indicesCount % 3 != 0) {
+        m_worldData.BSLog("CreateMeshShape2: indicesCount not divisible by 3: %d", indicesCount);
+        return nullptr;
+    }
+    
+    if (indicesCount < 0 || indicesCount > MAX_REASONABLE_INDICES) {
+        m_worldData.BSLog("CreateMeshShape2: Suspicious indicesCount: %d", indicesCount);
+        return nullptr;
+    }
+    
+    if (verticesCount < 0 || verticesCount > MAX_REASONABLE_VERTICES) {
+        m_worldData.BSLog("CreateMeshShape2: Suspicious verticesCount: %d", verticesCount);
+        return nullptr;
+    }
 
-	indexedMesh.m_indexType = PHY_INTEGER;
-	indexedMesh.m_triangleIndexBase = (const unsigned char*)copiedIndices;
-	indexedMesh.m_triangleIndexStride = sizeof(int) * 3;
-	indexedMesh.m_numTriangles = indicesCount / 3;
-	indexedMesh.m_vertexType = PHY_FLOAT;
-	indexedMesh.m_numVertices = verticesCount;
-	indexedMesh.m_vertexBase = (const unsigned char*)copiedVertices;
-	indexedMesh.m_vertexStride = sizeof(float) * 3;
+    //m_worldData.BSLog("CreateMeshShape2: indicesCount=%d, verticesCount=%d, totalVertices=%d", 
+     //                indicesCount, verticesCount, verticesCount * 3);				//DEBUG DEBUG
 
-	btTriangleIndexVertexArray* vertexArray = new btTriangleIndexVertexArray();
-	vertexArray->addIndexedMesh(indexedMesh, PHY_INTEGER);
+ // We must copy the indices and vertices since the passed memory is released when this call returns.
+    btIndexedMesh indexedMesh;
+    int* copiedIndices = new int[indicesCount];
+    __wrap_memcpy(copiedIndices, indices, indicesCount * sizeof(int));
+    int numVertices = verticesCount * 3;
+    float* copiedVertices = new float[numVertices];
+    __wrap_memcpy(copiedVertices, vertices, numVertices * sizeof(float));
 
-	bool useQuantizedAabbCompression = true;
-	bool buildBvh = true;
-	btBvhTriangleMeshShape* meshShape = new btBvhTriangleMeshShape(vertexArray, useQuantizedAabbCompression, buildBvh);
+    indexedMesh.m_indexType = PHY_INTEGER;
+    indexedMesh.m_triangleIndexBase = (const unsigned char*)copiedIndices;
+    indexedMesh.m_triangleIndexStride = sizeof(int) * 3;
+    indexedMesh.m_numTriangles = indicesCount / 3;
+    indexedMesh.m_vertexType = PHY_FLOAT;
+    indexedMesh.m_numVertices = verticesCount;
+    indexedMesh.m_vertexBase = (const unsigned char*)copiedVertices;
+    indexedMesh.m_vertexStride = sizeof(float) * 3;
 
-	meshShape->setMargin(m_worldData.params->collisionMargin);
+    // Use the managing vertex array class
+    ManagedTriangleIndexVertexArray* vertexArray = new ManagedTriangleIndexVertexArray();
+    vertexArray->addManagedIndexedMesh(indexedMesh, copiedIndices, copiedVertices, PHY_INTEGER);
 
-	return meshShape;
+    bool useQuantizedAabbCompression = true;
+    bool buildBvh = true;
+    btBvhTriangleMeshShape* meshShape = new btBvhTriangleMeshShape(vertexArray, useQuantizedAabbCompression, buildBvh);
+
+    meshShape->setMargin(m_worldData.params->collisionMargin);
+
+    return meshShape;
 }
 
 btCollisionShape* BulletSim::CreateGImpactShape2(int indicesCount, int* indices, int verticesCount, float* vertices)
 {
-	// We must copy the indices and vertices since the passed memory is released when this call returns.
-	btIndexedMesh indexedMesh;
-	int* copiedIndices = new int[indicesCount];
-	__wrap_memcpy(copiedIndices, indices, indicesCount * sizeof(int));
-	int numVertices = verticesCount * 3;
-	float* copiedVertices = new float[numVertices];
-	__wrap_memcpy(copiedVertices, vertices, numVertices * sizeof(float));
+    // Validate input parameters
+    if (indicesCount <= 0 || verticesCount <= 0 || !indices || !vertices) {
+        m_worldData.BSLog("CreateGImpactShape2: Invalid parameters - indicesCount=%d, verticesCount=%d", 
+                         indicesCount, verticesCount);
+        return nullptr;
+    }
+    
+    if (indicesCount % 3 != 0) {
+        m_worldData.BSLog("CreateGImpactShape2: indicesCount not divisible by 3: %d", indicesCount);
+        return nullptr;
+    }
+    
+    if (indicesCount < 0 || indicesCount > MAX_REASONABLE_INDICES) {
+        m_worldData.BSLog("CreateGImpactShape2: Suspicious indicesCount: %d", indicesCount);
+        return nullptr;
+    }
+    
+    if (verticesCount < 0 || verticesCount > MAX_REASONABLE_VERTICES) {
+        m_worldData.BSLog("CreateGImpactShape2: Suspicious verticesCount: %d", verticesCount);
+        return nullptr;
+    }
 
-	indexedMesh.m_indexType = PHY_INTEGER;
-	indexedMesh.m_triangleIndexBase = (const unsigned char*)copiedIndices;
-	indexedMesh.m_triangleIndexStride = sizeof(int) * 3;
-	indexedMesh.m_numTriangles = indicesCount / 3;
-	indexedMesh.m_vertexType = PHY_FLOAT;
-	indexedMesh.m_numVertices = verticesCount;
-	indexedMesh.m_vertexBase = (const unsigned char*)copiedVertices;
-	indexedMesh.m_vertexStride = sizeof(float) * 3;
+    //m_worldData.BSLog("CreateGImpactShape2: ind=%d, vert=%d", indicesCount, verticesCount); //DEBUG DEBUG
 
-	btTriangleIndexVertexArray* vertexArray = new btTriangleIndexVertexArray();
-	vertexArray->addIndexedMesh(indexedMesh, PHY_INTEGER);
+// We must copy the indices and vertices since the passed memory is released when this call returns.
+    btIndexedMesh indexedMesh;
+    int* copiedIndices = new int[indicesCount];
+    __wrap_memcpy(copiedIndices, indices, indicesCount * sizeof(int));
+    int numVertices = verticesCount * 3;
+    float* copiedVertices = new float[numVertices];
+    __wrap_memcpy(copiedVertices, vertices, numVertices * sizeof(float));
 
-	btGImpactMeshShape* meshShape = new btGImpactMeshShape(vertexArray);
-	m_worldData.BSLog("GreateGImpactShape2: ind=%d, vert=%d", indicesCount, verticesCount);
+    indexedMesh.m_indexType = PHY_INTEGER;
+    indexedMesh.m_triangleIndexBase = (const unsigned char*)copiedIndices;
+    indexedMesh.m_triangleIndexStride = sizeof(int) * 3;
+    indexedMesh.m_numTriangles = indicesCount / 3;
+    indexedMesh.m_vertexType = PHY_FLOAT;
+    indexedMesh.m_numVertices = verticesCount;
+    indexedMesh.m_vertexBase = (const unsigned char*)copiedVertices;
+    indexedMesh.m_vertexStride = sizeof(float) * 3;
 
-	meshShape->setMargin(m_worldData.params->collisionMargin);
+    // Use the managing vertex array class
+    ManagedTriangleIndexVertexArray* vertexArray = new ManagedTriangleIndexVertexArray();
+    vertexArray->addManagedIndexedMesh(indexedMesh, copiedIndices, copiedVertices, PHY_INTEGER);
 
-	// The gimpact shape needs some help to create its AABBs
-	meshShape->updateBound();
+    btGImpactMeshShape* meshShape = new btGImpactMeshShape(vertexArray);
 
-	return meshShape;
+    meshShape->setMargin(m_worldData.params->collisionMargin);
+
+    // The gimpact shape needs some help to create its AABBs
+    meshShape->updateBound();
+
+    return meshShape;
 }
 
 btCollisionShape* BulletSim::CreateHullShape2(int hullCount, float* hulls )
 {
+	// Validate input parameters
+	if (hullCount <= 0 || hullCount > MAX_REASONABLE_HULLS || !hulls) {
+		m_worldData.BSLog("CreateHullShape2: Invalid parameters - hullCount=%d", hullCount);
+		return nullptr;
+	}
+
 	// Create a compound shape that will wrap the set of convex hulls
 	btCompoundShape* compoundShape = new btCompoundShape(false);
 
@@ -574,7 +666,24 @@ btCollisionShape* BulletSim::CreateHullShape2(int hullCount, float* hulls )
 	int ii = 1;
 	for (int i = 0; i < hullCount; i++)
 	{
+		if (ii >= hullCount * 1000) { // Sanity check to prevent infinite loops
+			m_worldData.BSLog("CreateHullShape2: Sanity check failed - possible corrupt hull data");
+			break;
+		}
+		
 		int vertexCount = (int)hulls[ii];
+		
+		// Validate vertex count
+		if (vertexCount <= 0 || vertexCount > 1000) {
+			m_worldData.BSLog("CreateHullShape2: Invalid vertex count: %d", vertexCount);
+			continue;
+		}
+
+		// Check if we have enough data remaining
+		if (ii + 4 + vertexCount * 3 > hullCount * 1000) {
+			m_worldData.BSLog("CreateHullShape2: Insufficient data for hull %d", i);
+			break;
+		}
 
 		// Offset this child hull by its calculated centroid
 		btVector3 centroid = btVector3((btScalar)hulls[ii+1], (btScalar)hulls[ii+2], (btScalar)hulls[ii+3]);
@@ -613,12 +722,18 @@ btCollisionShape* BulletSim::CreateHullShape2(int hullCount, float* hulls )
 btCollisionShape* BulletSim::BuildHullShapeFromMesh2(btCollisionShape* mesh, HACDParams* parms)
 {
 #if defined(USEBULLETHACD)
+	// Validate input parameters
+	if (!mesh || !parms) {
+		m_worldData.BSLog("BuildHullShapeFromMesh2: Invalid parameters");
+		return nullptr;
+	}
+
 	// Get the triangle mesh data out of the passed mesh shape
 	int shapeType = mesh->getShapeType();
 	if (shapeType != TRIANGLE_MESH_SHAPE_PROXYTYPE)
 	{
 		// If the passed shape doesn't have a triangle mesh, we cannot hullify it.
-		m_worldData.BSLog("HACD: passed mesh not TRIANGLE_MESH_SHAPE");	// DEBUG DEBUG
+//		m_worldData.BSLog("HACD: passed mesh not TRIANGLE_MESH_SHAPE");	// DEBUG DEBUG
 		return NULL;
 	}
 	btStridingMeshInterface* meshInfo = ((btTriangleMeshShape*)mesh)->getMeshInterface();
@@ -635,8 +750,16 @@ btCollisionShape* BulletSim::BuildHullShapeFromMesh2(btCollisionShape* mesh, HAC
 	if (vertexType != PHY_FLOAT || indicesType != PHY_INTEGER)
 	{
 		// If an odd data structure, we cannot hullify
-		m_worldData.BSLog("HACD: triangle mesh not of right types");	// DEBUG DEBUG
+//		m_worldData.BSLog("HACD: triangle mesh not of right types");	// DEBUG DEBUG
+		meshInfo->unLockReadOnlyVertexBase(0);
 		return NULL;
+	}
+
+	// Validate reasonable sizes
+	if (numVerts <= 0 || numVerts > MAX_REASONABLE_VERTICES || numFaces <= 0 || numFaces > MAX_REASONABLE_INDICES / 3) {
+		m_worldData.BSLog("HACD: Invalid mesh sizes - verts=%d, faces=%d", numVerts, numFaces);
+		meshInfo->unLockReadOnlyVertexBase(0);
+		return nullptr;
 	}
 
 	// Create pointers to the vertices and indices as the PHY types that they are
@@ -644,18 +767,20 @@ btCollisionShape* BulletSim::BuildHullShapeFromMesh2(btCollisionShape* mesh, HAC
 	int tVertexStride = vertexStride / sizeof(float);
 	int* tIndices = (int*) indexBase;
 	int tIndicesStride = indexStride / sizeof(int);
-	m_worldData.BSLog("HACD: nVertices=%d, nIndices=%d", numVerts, numFaces*3);	// DEBUG DEBUG
+//	m_worldData.BSLog("HACD: nVertices=%d, nIndices=%d", numVerts, numFaces*3);	// DEBUG DEBUG
 
 	// Copy the vertices/indices into the HACD data structures
 	std::vector< HACD::Vec3<HACD::Real> > points;
 	std::vector< HACD::Vec3<long> > triangles;
 	for (int ii=0; ii < (numVerts * tVertexStride); ii += tVertexStride)
 	{
+		if (ii + 2 >= numVerts * tVertexStride) break; // Bounds check
 		HACD::Vec3<HACD::Real> vertex(tVertex[ii], tVertex[ii+1],tVertex[ii+2]);
 		points.push_back(vertex);
 	}
 	for(int ii=0; ii < (numFaces * tIndicesStride); ii += tIndicesStride ) 
 	{
+		if (ii + 2 >= numFaces * tIndicesStride) break; // Bounds check
 		HACD::Vec3<long> vertex( tIndices[ii],  tIndices[ii+1], tIndices[ii+2]);
 		triangles.push_back(vertex);
 	}
@@ -679,13 +804,13 @@ btCollisionShape* BulletSim::BuildHullShapeFromMesh2(btCollisionShape* mesh, HAC
 	myHACD.SetAddNeighboursDistPoints(parms->addNeighboursDistPoints == ParamTrue ? true : false);   
 	myHACD.SetAddFacesPoints(parms->addFacesPoints == ParamTrue ? true : false); 
 
-	m_worldData.BSLog("HACD: Before compute. nPoints=%d, nTriangles=%d, minClusters=%f, maxVerts=%f", 
-		points.size(), triangles.size(), parms->minClusters, parms->maxVerticesPerHull);	// DEBUG DEBUG
+//	m_worldData.BSLog("HACD: Before compute. nPoints=%d, nTriangles=%d, minClusters=%f, maxVerts=%f", 
+//		points.size(), triangles.size(), parms->minClusters, parms->maxVerticesPerHull);	// DEBUG DEBUG
 
 	// Hullify the mesh
 	myHACD.Compute();
 	int nHulls = (int)myHACD.GetNClusters();	
-	m_worldData.BSLog("HACD: After compute. nHulls=%d", nHulls);	// DEBUG DEBUG
+//	m_worldData.BSLog("HACD: After compute. nHulls=%d", nHulls);	// DEBUG DEBUG
 
 	// Create the compound shape all the hulls will be added to
 	btCompoundShape* compoundShape = new btCompoundShape(true);
@@ -696,7 +821,7 @@ btCollisionShape* BulletSim::BuildHullShapeFromMesh2(btCollisionShape* mesh, HAC
 	{
 		size_t nPoints = myHACD.GetNPointsCH(hul);
 		size_t nTriangles = myHACD.GetNTrianglesCH(hul);
-		m_worldData.BSLog("HACD: Add hull %d. nPoints=%d, nTriangles=%d", hul, nPoints, nTriangles);	// DEBUG DEBUG
+//		m_worldData.BSLog("HACD: Add hull %d. nPoints=%d, nTriangles=%d", hul, nPoints, nTriangles);	// DEBUG DEBUG
 
 		// Get the vertices and indices for one hull
 		HACD::Vec3<HACD::Real> * pointsCH = new HACD::Vec3<HACD::Real>[nPoints];
@@ -710,14 +835,17 @@ btCollisionShape* BulletSim::BuildHullShapeFromMesh2(btCollisionShape* mesh, HAC
 		for (int ii=0; ii < (int)nTriangles; ii++)
 		{
 			long tri = trianglesCH[ii].X();
+			if (tri < 0 || tri >= (int)nPoints) continue; // Bounds check
 			btVector3 corner1(pointsCH[tri].X(), pointsCH[tri].Y(), pointsCH[tri].Z() );
 			vertices.push_back(corner1);
 			centroid += corner1;
 			tri = trianglesCH[ii].Y();
+			if (tri < 0 || tri >= (int)nPoints) continue; // Bounds check
 			btVector3 corner2(pointsCH[tri].X(), pointsCH[tri].Y(), pointsCH[tri].Z() );
 			vertices.push_back(corner2);
 			centroid += corner2;
 			tri = trianglesCH[ii].Z();
+			if (tri < 0 || tri >= (int)nPoints) continue; // Bounds check
 			btVector3 corner3(pointsCH[tri].X(), pointsCH[tri].Y(), pointsCH[tri].Z() );
 			vertices.push_back(corner3);
 			centroid += corner3;
@@ -800,6 +928,12 @@ btCollisionShape* BulletSim::BuildVHACDHullShapeFromMesh2(btCollisionShape* mesh
 {
 #if defined(USEVHACD)
 
+	// Validate input parameters
+	if (!mesh || !parms) {
+		m_worldData.BSLog("BuildVHACDHullShapeFromMesh2: Invalid parameters");
+		return nullptr;
+	}
+
 	int* triangles;	// array of indesex
 	float* points;	// array of coordinates
 
@@ -816,10 +950,18 @@ btCollisionShape* BulletSim::BuildVHACDHullShapeFromMesh2(btCollisionShape* mesh
 	PHY_ScalarType indicesType;			// the data type of the indexes
 	meshInfo->getLockedReadOnlyVertexIndexBase(&vertexBase, numVerts, vertexType, vertexStride, &indexBase, indexStride, numFaces, indicesType);
 
+	// Validate reasonable sizes
+	if (numVerts <= 0 || numVerts > MAX_REASONABLE_VERTICES || numFaces <= 0 || numFaces > MAX_REASONABLE_INDICES / 3) {
+		m_worldData.BSLog("VHACD: Invalid mesh sizes - verts=%d, faces=%d", numVerts, numFaces);
+		meshInfo->unLockReadOnlyVertexBase(0);
+		return nullptr;
+	}
+
 	if (vertexType != PHY_FLOAT || indicesType != PHY_INTEGER)
 	{
 		// If an odd data structure, we cannot hullify
 		m_worldData.BSLog("VHACD: triangle mesh not of right types");	// DEBUG DEBUG
+		meshInfo->unLockReadOnlyVertexBase(0);
 		return NULL;
 	}
 
@@ -837,6 +979,7 @@ btCollisionShape* BulletSim::BuildVHACDHullShapeFromMesh2(btCollisionShape* mesh
 	int pp = 0;
 	for (int ii=0; ii < (numVerts * tVertexStride); ii += tVertexStride)
 	{
+		if (pp + 2 >= numVerts * 3) break; // Bounds check
 		points[pp+0] = tVertex[ii+0];
 		points[pp+1] = tVertex[ii+1];
 		points[pp+2] = tVertex[ii+2];
@@ -845,6 +988,7 @@ btCollisionShape* BulletSim::BuildVHACDHullShapeFromMesh2(btCollisionShape* mesh
 	pp = 0;
 	for(int ii=0; ii < (numFaces * tIndicesStride); ii += tIndicesStride ) 
 	{
+		if (pp + 2 >= numFaces * 3) break; // Bounds check
 		triangles[pp+0] = tIndices[ii+0];
 		triangles[pp+1] = tIndices[ii+1];
 		triangles[pp+2] = tIndices[ii+2];
@@ -921,6 +1065,7 @@ btCollisionShape* BulletSim::BuildVHACDHullShapeFromMesh2(btCollisionShape* mesh
 		for (int ii=0; ii < nTriangles; ii++)
 		{
 			int tri = ch.m_triangles[ii] * 3;
+			if (tri + 2 >= (int)(nPoints * 3)) continue; // Bounds check
 			btVector3 vertex(ch.m_points[tri+0], ch.m_points[tri+1], ch.m_points[tri+2]);
 			vertices.push_back(vertex);
 		}
@@ -983,6 +1128,12 @@ btCollisionShape* BulletSim::BuildVHACDHullShapeFromMesh2(btCollisionShape* mesh
 // Used to create the separate hulls if using the C# HACD algorithm.
 btCollisionShape* BulletSim::BuildConvexHullShapeFromMesh2(btCollisionShape* mesh)
 {
+	// Validate input parameters
+	if (!mesh) {
+		m_worldData.BSLog("BuildConvexHullShapeFromMesh2: Invalid parameters");
+		return nullptr;
+	}
+
 	btConvexHullShape* hullShape = new btConvexHullShape();
 
 	// Get the triangle mesh data out of the passed mesh shape
@@ -1004,10 +1155,18 @@ btCollisionShape* BulletSim::BuildConvexHullShapeFromMesh2(btCollisionShape* mes
 	PHY_ScalarType indicesType;
 	meshInfo->getLockedReadOnlyVertexIndexBase(&vertexBase, numVerts, vertexType, vertexStride, &indexBase, indexStride, numFaces, indicesType);
 
+	// Validate reasonable sizes
+	if (numVerts <= 0 || numVerts > MAX_REASONABLE_VERTICES || numFaces <= 0 || numFaces > MAX_REASONABLE_INDICES / 3) {
+		m_worldData.BSLog("BuildConvexHullShapeFromMesh2: Invalid mesh sizes - verts=%d, faces=%d", numVerts, numFaces);
+		meshInfo->unLockReadOnlyVertexBase(0);
+		return nullptr;
+	}
+
 	if (vertexType != PHY_FLOAT || indicesType != PHY_INTEGER)
 	{
 		// If an odd data structure, we cannot hullify
 		m_worldData.BSLog("BuildConvexHullShapeFromMesh2: triangle mesh not of right types");	// DEBUG DEBUG
+		meshInfo->unLockReadOnlyVertexBase(0);
 		return NULL;
 	}
 
@@ -1021,15 +1180,20 @@ btCollisionShape* BulletSim::BuildConvexHullShapeFromMesh2(btCollisionShape* mes
 	// Add points to the hull shape
 	for(int ii=0; ii < (numFaces * tIndicesStride); ii += tIndicesStride ) 
 	{
+		if (ii + 2 >= numFaces * tIndicesStride) break; // Bounds check
+		
 		int point1Index = tIndices[ii + 0] * tVertexStride;
+		if (point1Index + 2 >= numVerts * tVertexStride) continue; // Bounds check
 		btVector3 point1 = btVector3(tVertex[point1Index + 0], tVertex[point1Index + 1], tVertex[point1Index + 2] );
 		hullShape->addPoint(point1);
 
 		int point2Index = tIndices[ii + 1] * tVertexStride;
+		if (point2Index + 2 >= numVerts * tVertexStride) continue; // Bounds check
 		btVector3 point2 = btVector3(tVertex[point2Index + 0], tVertex[point2Index + 1], tVertex[point2Index + 2] );
 		hullShape->addPoint(point2);
 
 		int point3Index = tIndices[ii + 2] * tVertexStride;
+		if (point3Index + 2 >= numVerts * tVertexStride) continue; // Bounds check
 		btVector3 point3 = btVector3(tVertex[point3Index + 0], tVertex[point3Index + 1], tVertex[point3Index + 2] );
 		hullShape->addPoint(point3);
 	}
@@ -1041,19 +1205,46 @@ btCollisionShape* BulletSim::BuildConvexHullShapeFromMesh2(btCollisionShape* mes
 
 btCollisionShape* BulletSim::CreateConvexHullShape2(int indicesCount, int* indices, int verticesCount, float* vertices)
 {
+	// Validate input parameters
+	if (indicesCount <= 0 || verticesCount <= 0 || !indices || !vertices) {
+		m_worldData.BSLog("CreateConvexHullShape2: Invalid parameters - indicesCount=%d, verticesCount=%d", 
+						 indicesCount, verticesCount);
+		return nullptr;
+	}
+	
+	if (indicesCount % 3 != 0) {
+		m_worldData.BSLog("CreateConvexHullShape2: indicesCount not divisible by 3: %d", indicesCount);
+		return nullptr;
+	}
+	
+	if (indicesCount < 0 || indicesCount > MAX_REASONABLE_INDICES) {
+		m_worldData.BSLog("CreateConvexHullShape2: Suspicious indicesCount: %d", indicesCount);
+		return nullptr;
+	}
+	
+	if (verticesCount < 0 || verticesCount > MAX_REASONABLE_VERTICES) {
+		m_worldData.BSLog("CreateConvexHullShape2: Suspicious verticesCount: %d", verticesCount);
+		return nullptr;
+	}
+
 	btConvexHullShape* hullShape = new btConvexHullShape();
 
 	for (int ii = 0; ii < indicesCount; ii += 3)
 	{
+		if (ii + 2 >= indicesCount) break; // Bounds check
+		
 		int point1Index = indices[ii + 0] * 3;
+		if (point1Index + 2 >= verticesCount * 3) continue; // Bounds check
 		btVector3 point1 = btVector3(vertices[point1Index + 0], vertices[point1Index + 1], vertices[point1Index + 2] );
 		hullShape->addPoint(point1);
 
 		int point2Index = indices[ii + 1] * 3;
+		if (point2Index + 2 >= verticesCount * 3) continue; // Bounds check
 		btVector3 point2 = btVector3(vertices[point2Index + 0], vertices[point2Index + 1], vertices[point2Index + 2] );
 		hullShape->addPoint(point2);
 
 		int point3Index = indices[ii + 2] * 3;
+		if (point3Index + 2 >= verticesCount * 3) continue; // Bounds check
 		btVector3 point3 = btVector3(vertices[point3Index + 0], vertices[point3Index + 1], vertices[point3Index + 2] );
 		hullShape->addPoint(point3);
 
@@ -1186,4 +1377,27 @@ void BulletSim::DumpPhysicsStats()
 {
 	// CProfileManager::dumpAll();
 	return;
+}
+
+void WorldData::BSLog(const char* msg, ...)
+{
+	va_list args;
+	va_start(args, msg);
+	BSLog2(msg, args);
+	va_end(args);
+}
+
+void WorldData::BSLog2(const char* msg, va_list argp)
+{
+	char buffer[4096];
+	vsnprintf(buffer, sizeof(buffer), msg, argp);
+
+	// Output to console
+	printf("%s\n", buffer);
+	fflush(stdout);
+
+	// Also call the debug callback if it exists
+	if (debugLogCallback != nullptr) {
+	debugLogCallback(buffer);
+	}
 }

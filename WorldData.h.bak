@@ -34,25 +34,8 @@
 #include "APIData.h"
 #include "btBulletDynamicsCommon.h"
 
-// Include GPU acceleration headers if available
-#if defined(USE_GPU_ACCELERATION)
-#include "Bullet3OpenCL/Initialize/b3OpenCLUtils.h"
-#include "Bullet3OpenCL/BroadphaseCollision/b3GpuBroadphaseInterface.h"
-#include "Bullet3OpenCL/BroadphaseCollision/b3GpuSapBroadphase.h"
-#include "Bullet3OpenCL/RigidBody/b3GpuNarrowPhase.h"
-#include "Bullet3OpenCL/RigidBody/b3GpuRigidBodyPipeline.h"
-#else
-// Forward declarations for when GPU is disabled
-class b3GpuRigidBodyPipeline;
-class b3GpuBroadphaseInterface;
-class b3GpuNarrowPhase;
-#endif
-
 #include <stdarg.h>
 #include <map>
-
-#include <cstdarg>
-#include <cstdio>
 
 // Forward references
 class BulletSim;
@@ -116,10 +99,22 @@ struct WorldData
 	}
 	*/
 	// Call back into the managed world to output a log message with formatting
-	
-	void BSLog(const char* msg, ...);
-    	void BSLog2(const char* msg, va_list argp);
-
+	void BSLog(const char* msg, ...) {
+		if (debugLogCallback != NULL) {
+			va_list args;
+			va_start(args, msg);
+			BSLog2(msg, args);
+			va_end(args);
+		}
+	}
+	void BSLog2(const char* msg, va_list argp)
+	{
+		char buff[2048];
+		if (debugLogCallback != NULL) {
+			vsprintf(buff, msg, argp);
+			(*debugLogCallback)(buff);
+		}
+	}
 
 	void	dumpAll()
 	{

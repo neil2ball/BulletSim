@@ -71,27 +71,24 @@ else
     if [[ "$MACH" == "x86_64" ]] 
     then
         echo "=== Running cmake for arch $MACH"
-        cmake .. -G "Unix Makefiles" \
-                -DBUILD_BULLET3=ON \
-                -DBUILD_EXTRAS=ON \
-                    -DBUILD_INVERSE_DYNAMIC_EXTRA=OFF \
-                    -DBUILD_BULLET_ROBOTICS_GUI_EXTRA=OFF \
-                    -DBUILD_BULLET_ROBOTICS_EXTRA=OFF \
-                    -DBUILD_OBJ2SDF_EXTRA=OFF \
-                    -DBUILD_SERIALIZE_EXTRA=OFF \
-                    -DBUILD_CONVEX_DECOMPOSITION_EXTRA=ON \
-                    -DBUILD_HACD_EXTRA=ON \
-                    -DBUILD_GIMPACTUTILS_EXTRA=OFF \
-                -DBUILD_CPU_DEMOS=OFF \
-                -DBUILD_BULLET2_DEMOS=OFF \
-                -DBUILD_ENET=OFF \
-                -DBUILD_PYBULLET=OFF \
-                -DBUILD_UNIT_TESTS=OFF \
-                -DBUILD_SHARED_LIBS=OFF \
-                -DINSTALL_EXTRA_LIBS=ON \
-                -DINSTALL_LIBS=ON \
-                -DCMAKE_CXX_FLAGS="-fPIC" \
-                -DCMAKE_BUILD_TYPE=Release
+	    echo "=== Running cmake for arch $MACH"
+	    cmake .. \
+  		-DBUILD_SHARED_LIBS=ON \
+  		-DBUILD_BULLET2_DEMOS=OFF \
+  		-DBUILD_EXTRAS=ON \
+  		-DBUILD_BULLET3=ON \
+  		-DUSE_OPENCL=ON \
+  		-DBUILD_UNIT_TESTS=OFF \
+  		-DBUILD_BULLET_ROBOTICS_EXTRA=ON \
+  		-DBUILD_BULLET_ROBOTICS_GUI_EXTRA=OFF \
+  		-DBUILD_HACD_EXTRA=ON \
+  		-DBUILD_CONVEX_DECOMPOSITION_EXTRA=ON \
+  		-DCMAKE_C_FLAGS="-fPIC" \
+  		-DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+  		-DOpenGL_GL_PREFERENCE=GLVND \
+  		-DBUILD_SERIALIZE_EXTRA=ON \
+  		-DCMAKE_BUILD_TYPE=Release \
+  		-DCMAKE_CXX_FLAGS="-fPIC -DBT_XML_SUPPORT -fvisibility=default"
     elif [[ "$MACH" == "aarch64" ]] 
     then
         echo "=== Running cmake for arch $MACH"

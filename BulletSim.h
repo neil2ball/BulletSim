@@ -29,6 +29,9 @@
 #ifndef BULLET_SIM_H
 #define BULLET_SIM_H
 
+#define CL_TARGET_OPENCL_VERSION 120
+#include <CL/cl.h>
+
 #include "DebugLogic.h"
 
 #include "ArchStuff.h"
@@ -40,8 +43,49 @@
 #include "LinearMath/btMotionState.h"
 #include "btBulletDynamicsCommon.h"
 
+// Add GPU acceleration includes
+#if defined(USE_GPU_ACCELERATION)
+#include "Bullet3OpenCL/Initialize/b3OpenCLUtils.h"
+#include "Bullet3OpenCL/BroadphaseCollision/b3GpuBroadphaseInterface.h"
+#include "Bullet3OpenCL/BroadphaseCollision/b3GpuSapBroadphase.h"
+#include "Bullet3OpenCL/RigidBody/b3GpuNarrowPhase.h"
+#include "Bullet3OpenCL/RigidBody/b3GpuRigidBodyPipeline.h"
+#else
+// Forward declarations for when GPU is disabled
+class b3GpuRigidBodyPipeline;
+class b3GpuBroadphaseInterface;
+class b3GpuNarrowPhase;
+#endif
+
+// Add missing include for btDynamicsWorld methods
+#include "BulletDynamics/Dynamics/btDiscreteDynamicsWorld.h"
+
 #include <set>
 #include <map>
+
+// Vertex array that manages the memory for copied mesh data to prevent leaks
+class ManagedTriangleIndexVertexArray : public btTriangleIndexVertexArray
+{
+public:
+    btAlignedObjectArray<std::pair<void*, void*>> m_allocatedData; // pairs of [indexData, vertexData]
+
+    virtual ~ManagedTriangleIndexVertexArray()
+    {
+        for (int i = 0; i < m_allocatedData.size(); ++i)
+        {
+            delete[] (int*)m_allocatedData[i].first;    // delete index array
+            delete[] (float*)m_allocatedData[i].second; // delete vertex array
+        }
+        m_allocatedData.clear();
+    }
+
+    // Helper function to add a mesh and track its allocated data
+    void addManagedIndexedMesh(const btIndexedMesh& mesh, void* indexData, void* vertexData, PHY_ScalarType indexType = PHY_INTEGER)
+    {
+        addIndexedMesh(mesh, indexType);
+        m_allocatedData.push_back(std::make_pair(indexData, vertexData));
+    }
+};
 
 // #define TOLERANCE 0.00001
 // these values match the ones in SceneObjectPart.SendScheduledUpdates()
@@ -270,6 +314,14 @@ private:
 	btConstraintSolver*	m_solver;
 	btDefaultCollisionConfiguration* m_collisionConfiguration;
 
+	// GPU acceleration objects
+	b3GpuRigidBodyPipeline* m_gpuPipeline;
+	b3GpuBroadphaseInterface* m_gpuBroadphase;
+	b3GpuNarrowPhase* m_gpuNarrowphase;
+	cl_context m_openclContext;
+	cl_command_queue m_openclQueue;
+	cl_device_id m_openclDevice;
+
 	int m_dumpStatsCount;
 
 	// Information about the world that is shared with all the objects
@@ -304,6 +356,28 @@ public:
 	btCollisionShape* BuildVHACDHullShapeFromMesh2(btCollisionShape* mesh, HACDParams* parms);
 	btCollisionShape* BuildConvexHullShapeFromMesh2(btCollisionShape* mesh);
 	btCollisionShape* CreateConvexHullShape2(int indicesCount, int* indices, int verticesCount, float* vertices);
+	btCollisionShape* CreateBoxShape2(btVector3 halfExtents);
+	btCollisionShape* CreateSphereShape2(btScalar radius);
+	btCollisionShape* CreateCylinderShape2(btVector3 halfExtents);
+	btCollisionShape* CreateCapsuleShape2(btScalar radius, btScalar height);
+	btCollisionShape* CreateConeShape2(btScalar radius, btScalar height);
+	btCollisionShape* CreateMultiSphereShape2(int sphereCount, btVector3* positions, btScalar* radii);
+	btCollisionShape* CreatePlaneShape2(btVector3 planeNormal, btScalar planeConstant);
+	btCollisionShape* CreateHeightfieldShape2(int width, int length, float* heightData, btScalar minHeight, btScalar maxHeight);
+	btCollisionShape* CreateEmptyShape2();
+	btCollisionShape* CreateCompoundShape2();
+	void AddChildShapeToCompound2(btCompoundShape* compoundShape, btCollisionShape* childShape, btVector3 position, btQuaternion rotation);
+	int registerPhysicsInstance2(float mass, const btVector3& position, const btQuaternion& orientation, int collisionShapeIndex, int userData);
+
+	// Missing function declarations
+	btCollisionShape* CreateHeightfieldTerrainShape2(int width, int length, float* heightfieldData, 
+                                                   float minHeight, float maxHeight, float heightScale, 
+                                                   int upAxis, int heightDataType);
+	btCollisionShape* CreateConvexTriangleMeshShape2(int indicesCount, int* indices, 
+                                                    int verticesCount, float* vertices);
+	btCollisionShape* CreateStaticPlaneShape2(btVector3 planeNormal, btScalar planeConstant);
+	btCollisionShape* CreateHACDShape2(int indicesCount, int* indices, int verticesCount, float* vertices);
+	btCollisionShape* CreateVHACDShape2(int indicesCount, int* indices, int verticesCount, float* vertices);
 
 	// Collisions: called to add a collision record to the collisions for a simulation step
 	int maxCollisionsPerFrame;
@@ -321,6 +395,17 @@ public:
 
 	bool UpdateParameter2(IDTYPE localID, const char* parm, float value);
 	void DumpPhysicsStats();
+
+	// Add missing function declarations
+	btCollisionObject* CreateCollisionObject2(btCollisionShape* collisionShape, IDTYPE localID, int collisionType, int collisionFilterGroup, int collisionFilterMask);
+	btRigidBody* CreateRigidBody2(btScalar mass, btMotionState* motionState, btCollisionShape* collisionShape, IDTYPE localID, int collisionType, int collisionFilterGroup, int collisionFilterMask);
+	btPairCachingGhostObject* CreateGhostObject2(btCollisionShape* collisionShape, IDTYPE localID, int collisionFilterGroup, int collisionFilterMask);
+	void DestroyCollisionObject2(btCollisionObject* collisionObject);
+	void AddChildShapeToCompoundShape2(btCompoundShape* compoundShape, btCollisionShape* childShape, btTransform& localTransform);
+	void RemoveChildShapeFromCompoundShape2(btCompoundShape* compoundShape, btCollisionShape* childShape);
+	void UpdateChildTransformInCompoundShape2(btCompoundShape* compoundShape, btCollisionShape* childShape, btTransform& newLocalTransform);
+	void SetCollisionShapeMargin2(btCollisionShape* collisionShape, btScalar margin);
+	void SetCollisionObjectActivationState2(btCollisionObject* collisionObject, int activationState);
 
 protected:
 	void CreateGroundPlane();
