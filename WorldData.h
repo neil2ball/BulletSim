@@ -30,6 +30,16 @@
 #ifndef WORLD_DATA_H
 #define WORLD_DATA_H
 
+#ifdef _WIN32
+    #ifdef BULLETSIM_EXPORTS
+        #define BULLETSIM_API __declspec(dllexport)
+    #else
+        #define BULLETSIM_API __declspec(dllimport)
+    #endif
+#else
+    #define BULLETSIM_API
+#endif
+
 #include "ArchStuff.h"
 #include "APIData.h"
 #include "btBulletDynamicsCommon.h"
@@ -66,7 +76,7 @@ class GroundPlaneObject;
 typedef void DebugLogCallback(const char*);
 
 // Structure to hold the world data that is common to all the objects in the world
-struct WorldData
+struct BULLETSIM_API WorldData
 {
 	BulletSim* sim;
 

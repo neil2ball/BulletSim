@@ -1,0 +1,14 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index e7a58e6d6..d836a7b97 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1,4 +1,9 @@
+ cmake_minimum_required(VERSION 3.5)
++
++set(OPENCL_FOUND TRUE)
++set(OPENCL_INCLUDE_DIR "C:/OpenCL-SDK/include")
++set(OPENCL_LIBRARY "C:/OpenCL-SDK/lib/OpenCL.lib")
++
+ set(USE_OPENCL ON CACHE BOOL "" FORCE)
+ set(BUILD_BULLET3 ON CACHE BOOL "" FORCE)
+ set(CMAKE_ALLOW_LOOSE_LOOP_CONSTRUCTS true)

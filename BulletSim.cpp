@@ -1379,7 +1379,13 @@ void BulletSim::DumpPhysicsStats()
 	return;
 }
 
-void WorldData::BSLog(const char* msg, ...)
+#ifdef _WIN32
+    #define BULLETSIM_API __declspec(dllexport)
+#else
+    #define BULLETSIM_API
+#endif
+
+BULLETSIM_API void WorldData::BSLog(const char* msg, ...)
 {
 	va_list args;
 	va_start(args, msg);
@@ -1387,7 +1393,7 @@ void WorldData::BSLog(const char* msg, ...)
 	va_end(args);
 }
 
-void WorldData::BSLog2(const char* msg, va_list argp)
+BULLETSIM_API void WorldData::BSLog2(const char* msg, va_list argp)
 {
 	char buffer[4096];
 	vsnprintf(buffer, sizeof(buffer), msg, argp);
