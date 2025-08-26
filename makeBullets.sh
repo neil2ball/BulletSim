@@ -21,7 +21,56 @@ USEOPENCL=${USEOPENCL:-yes}
 
 BASE=$(pwd)
 
-if [[ "$FETCHBULLETSOURCES" == "yes" ]] ; then
+# Check for OpenCL SDK installation if OpenCL is enabled
+if [ "$USEOPENCL" = "yes" ]; then
+    echo "=== Checking for OpenCL SDK installation"
+
+    # Check if OpenCL SDK is available
+    openCLInstalled=false
+
+    # Check environment variables first
+    if [ -n "$OPENCL_SDK_ROOT" ] && [ -d "$OPENCL_SDK_ROOT" ]; then
+        openCLInstalled=true
+        echo "OpenCL SDK found via environment variable: $OPENCL_SDK_ROOT"
+    # Check default installation path
+    elif [ -d "$HOME/OpenCL-SDK" ]; then
+        openCLInstalled=true
+        echo "OpenCL SDK found at default location: ~/OpenCL-SDK"
+#     # Check for headers and libraries in common locations
+#     elif pkg-config --exists OpenCL; then
+#         openCLInstalled=true
+#         echo "OpenCL found via pkg-config"
+#     elif [ -f "/usr/include/CL/cl.h" ] || [ -f "/usr/local/include/CL/cl.h" ]; then
+#         openCLInstalled=true
+#         echo "OpenCL found in system include paths"
+#     fi
+    fi
+
+    if [ "$openCLInstalled" = false ]; then
+        echo "OpenCL SDK not found. Installing Khronos vendor-neutral OpenCL SDK..."
+
+        # Check if install script exists
+        installScript="installOpenCL-SDK.sh"
+        if [ -f "$installScript" ]; then
+            # Install to a local directory to avoid needing sudo
+            ./installOpenCL-SDK.sh --force
+            # Source the environment variables for current session
+            export OPENCL_SDK_ROOT="$HOME/OpenCL-SDK"
+            export OpenCL_INCLUDE_DIR="$OPENCL_SDK_ROOT/include"
+            export OpenCL_LIBRARY_DIR="$OPENCL_SDK_ROOT/lib"
+            export PATH="$OPENCL_SDK_ROOT/bin:$PATH"
+            export LD_LIBRARY_PATH="$OPENCL_SDK_ROOT/lib:$LD_LIBRARY_PATH"
+            echo "OpenCL SDK installation completed."
+        else
+            echo "WARNING: OpenCL SDK install script '$installScript' not found. Continuing without OpenCL support."
+            USEOPENCL="no"
+        fi
+    else
+        echo "OpenCL SDK is available for build"
+    fi
+fi
+
+if [ "$FETCHBULLETSOURCES" = "yes" ]; then
     cd "$BASE"
     rm -rf bullet3
 
@@ -31,19 +80,27 @@ if [[ "$FETCHBULLETSOURCES" == "yes" ]] ; then
     echo "=== Applying BulletSim patches to bullet3"
     cd "$BASE"
     cd bullet3
-    for file in ../000* ; do
-	filename=$(basename "$file")
-    	if [ "$filename" = "0002-force-opencl.patch" ]; then
+    for file in ../000*; do
+        filename=$(basename "$file")
+        echo "Processing patch: $filename"
 
-	    if [[ "$USEOPENCL" == "yes" ]] ; then
-       	        cat "$file" | patch -p1
-	    fi
-
-    	else	
-	    cat $file | patch -p1
-	fi
+        if [ "$filename" = "0002-force-opencl.patch" ]; then
+            if [ "$USEOPENCL" = "yes" ]; then
+                if ! git apply --ignore-whitespace "$file"; then
+                    echo "ERROR: Failed to apply OpenCL patch: $filename"
+                    exit 1
+                fi
+            else
+                echo "Skipping OpenCL patch: $filename (USEOPENCL is not 'yes')"
+            fi
+	elif [ "$filename" = "0003-bullet3-opencl-fix.patch" ]; then
+		continue
+        else
+            if ! git apply --ignore-whitespace "$file"; then
+                echo "Warning: Failed to apply patch: $filename"
+            fi
+        fi
     done
-
 fi
 
 cd "$BASE"
@@ -60,8 +117,7 @@ export BulletGitVersionShort=$(git rev-parse --short HEAD)
 
 echo "=== Creating version information file"
 cd "$BASE"
-rm BulletSimVersionInfo
-touch BulletSimVersionInfo
+rm -f BulletSimVersionInfo
 echo "BuildDate=$BuildDate" > BulletSimVersionInfo
 echo "BulletSimVersion=$BulletSimVersion" >> BulletSimVersionInfo
 echo "BulletSimGitVersion=$BulletSimGitVersion" >> BulletSimVersionInfo
@@ -69,15 +125,17 @@ echo "BulletSimGitVersionShort=$BulletSimGitVersionShort" >> BulletSimVersionInf
 echo "BulletVersion=$BulletVersion" >> BulletSimVersionInfo
 echo "BulletGitVersion=$BulletGitVersion" >> BulletSimVersionInfo
 echo "BulletGitVersionShort=$BulletGitVersionShort" >> BulletSimVersionInfo
+echo "USEOPENCL=$USEOPENCL" >> BulletSimVersionInfo
 cat BulletSimVersionInfo
 
 echo "=== removing libBulletSim-*"
-rm libBulletSim-*.so
+rm -f libBulletSim-*.so
 
-if [[ "$BUILDBULLET3" == "yes" ]] ; then
+if [ "$BUILDBULLET3" = "yes" ]; then
     echo "=== building bullet3"
     cd "$BASE"
     # Build the Bullet physics engine
+    export USEOPENCL="$USEOPENCL"
     BULLETDIR=bullet3 ./buildBulletCMake.sh
     # Build the BulletSim glue/wrapper statically linked to Bullet
     ./buildBulletSim.sh
