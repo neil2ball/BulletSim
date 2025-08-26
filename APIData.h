@@ -37,6 +37,11 @@
 #define ID_GROUND_PLANE 1
 #define ID_INVALID_HIT 0xFFFFFFFF
 
+//hollow and cut primitives
+#define HOLLOW_THRESHOLD 0.05f
+#define CUT_THRESHOLD 0.05f
+#define INNER_SHAPE_SCALE 0.9f
+
 // API-exposed structure for a 3D vector
 struct Vector3
 {
@@ -234,6 +239,11 @@ struct ShapeData
 	float Restitution;
 	float Collidable;	// things can collide with this object
 	float Static;	// object is non-moving. Otherwise gravity, etc
+	
+	//fields for hollow and cut primitives
+    float Hollow;
+    float ProfileBegin;
+    float ProfileEnd;
 };
 
 // API-exposed structure for reporting a collision

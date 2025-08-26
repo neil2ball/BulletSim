@@ -105,6 +105,50 @@ void __cdecl StaticBSLog(const char* msg, ...)
 */
 // END DEBUG DEBUG DEBUG =========================================================================================
 
+
+// Helper functions for hollow/cut primitives
+float CalculateMinOpeningFraction(float primSize)
+{
+    const float avatarRadius = 0.45f;
+    return (avatarRadius * 2.0f) / primSize;
+}
+
+btCollisionShape* CreateInnerShape(btCollisionShape* outerShape, float scaleFactor)
+{
+    btVector3 scaling = outerShape->getLocalScaling();
+    scaling *= scaleFactor;
+    
+    switch (outerShape->getShapeType())
+    {
+        case BOX_SHAPE_PROXYTYPE: {
+            btBoxShape* box = (btBoxShape*)outerShape;
+            btVector3 halfExtents = box->getHalfExtentsWithMargin() * scaleFactor;
+            return new btBoxShape(halfExtents);
+        }
+        case CYLINDER_SHAPE_PROXYTYPE: {
+            btCylinderShape* cyl = (btCylinderShape*)outerShape;
+            btVector3 halfExtents = cyl->getHalfExtentsWithMargin() * scaleFactor;
+            return new btCylinderShape(halfExtents);
+        }
+        case CONE_SHAPE_PROXYTYPE: {
+            btConeShape* cone = (btConeShape*)outerShape;
+            return new btConeShape(cone->getRadius() * scaleFactor, 
+                                 cone->getHeight() * scaleFactor);
+        }
+        case SPHERE_SHAPE_PROXYTYPE: {
+            btSphereShape* sphere = (btSphereShape*)outerShape;
+            return new btSphereShape(sphere->getRadius() * scaleFactor);
+        }
+        case CAPSULE_SHAPE_PROXYTYPE: {
+            btCapsuleShape* capsule = (btCapsuleShape*)outerShape;
+            return new btCapsuleShape(capsule->getRadius() * scaleFactor,
+                                    capsule->getHalfHeight() * scaleFactor);
+        }
+        default:
+            return NULL;
+    }
+}
+
 /**
  * Initializes the physical simulation.
  * @param maxPosition Top north-east corner of the simulation, with Z being up. The bottom south-west corner is 0,0,0.
@@ -340,6 +384,32 @@ EXTERN_C DLL_EXPORT btCollisionShape* BuildNativeShape2(BulletSim* sim, ShapeDat
 	{
 		shape->setMargin(btScalar(sim->getWorldData()->params->collisionMargin));
 		shape->setLocalScaling(shapeData.Scale.GetBtVector3());
+		
+		        // Check for significant hollows or cuts
+        float minOpeningFraction = CalculateMinOpeningFraction(
+            std::max(shapeData.Scale.X, std::max(shapeData.Scale.Y, shapeData.Scale.Z))
+        );
+        
+        if (shapeData.Hollow > HOLLOW_THRESHOLD || 
+            (shapeData.ProfileEnd - shapeData.ProfileBegin) > CUT_THRESHOLD) {
+            
+            btCollisionShape* innerShape = CreateInnerShape(shape, INNER_SHAPE_SCALE);
+            if (innerShape) {
+                btCompoundShape* compound = new btCompoundShape();
+                btTransform transform;
+                transform.setIdentity();
+                
+                // Add outer shape
+                compound->addChildShape(transform, shape);
+                
+                // Add inner shape as non-colliding
+                innerShape->setUserPointer((void*)BS_SUBSCRIBE_COLLISION_EVENTS);
+                compound->addChildShape(transform, innerShape);
+                
+                shape = compound;
+            }
+        }
+		
 		bsDebug_RememberCollisionShape(shape);
 	}
 
