@@ -349,25 +349,6 @@ struct ParamBlock
 	float physicsLoggingFrames;
 };
 
-// Shape types for ShapeDesc
-enum ShapeType
-{
-    BOX_SHAPE,
-    SPHERE_SHAPE,
-    CYLINDER_SHAPE,
-    CAPSULE_SHAPE,
-    CONE_SHAPE,
-    MULTISPHERE_SHAPE,
-    CONVEX_HULL_SHAPE,
-    TRIANGLE_MESH_SHAPE,
-    GIMPACT_SHAPE,
-    COMPOUND_SHAPE,
-    EMPTY_SHAPE,
-    PLANE_SHAPE,
-    HEIGHTFIELD_SHAPE,
-    HACD_SHAPE,
-    VHACD_SHAPE
-};
 
 // Block of parameters for HACD algorithm
 struct HACDParams
@@ -399,29 +380,6 @@ struct HACDParams
 	float vHACDminVolumePerCH;		// sampling of generated convex hulls
 	float vHACDconvexHullApprox;	// approximate hulls to accelerate computation
 	float vHACDoclAcceleration;		// use OpenCL
-};
-
-// Structure for describing collision shapes
-struct ShapeDesc
-{
-    ShapeType Type;
-    union
-    {
-        struct { btVector3 HalfExtents; } Box;
-        struct { btScalar Radius; } Sphere;
-        struct { btVector3 HalfExtents; } Cylinder;
-        struct { btScalar Radius; btScalar Height; } Capsule;
-        struct { btScalar Radius; btScalar Height; } Cone;
-        struct { int SphereCount; btVector3* Positions; btScalar* Radii; } MultiSphere;
-        struct { int HullCount; float* Hulls; } ConvexHull;
-        struct { int IndicesCount; int* Indices; int VerticesCount; float* Vertices; } TriangleMesh;
-        struct { int IndicesCount; int* Indices; int VerticesCount; float* Vertices; } GImpact;
-        struct { int ChildCount; btCollisionShape** ChildShapes; btTransform* ChildTransforms; } Compound;
-        struct { btVector3 PlaneNormal; btScalar PlaneConstant; } Plane;
-        struct { int Width; int Length; float* HeightData; btScalar MinHeight; btScalar MaxHeight; } Heightfield;
-        struct { int IndicesCount; int* Indices; int VerticesCount; float* Vertices; HACDParams Params; } HACD;
-        struct { int IndicesCount; int* Indices; int VerticesCount; float* Vertices; HACDParams Params; } VHACD;
-    } Data;
 };
 
 #define CONSTRAINT_NOT_SPECIFIED (-1)

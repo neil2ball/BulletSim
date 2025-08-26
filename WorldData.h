@@ -44,25 +44,8 @@
 #include "APIData.h"
 #include "btBulletDynamicsCommon.h"
 
-// Include GPU acceleration headers if available
-#if defined(USE_GPU_ACCELERATION)
-#include "Bullet3OpenCL/Initialize/b3OpenCLUtils.h"
-#include "Bullet3OpenCL/BroadphaseCollision/b3GpuBroadphaseInterface.h"
-#include "Bullet3OpenCL/BroadphaseCollision/b3GpuSapBroadphase.h"
-#include "Bullet3OpenCL/RigidBody/b3GpuNarrowPhase.h"
-#include "Bullet3OpenCL/RigidBody/b3GpuRigidBodyPipeline.h"
-#else
-// Forward declarations for when GPU is disabled
-class b3GpuRigidBodyPipeline;
-class b3GpuBroadphaseInterface;
-class b3GpuNarrowPhase;
-#endif
-
 #include <stdarg.h>
 #include <map>
-
-#include <cstdarg>
-#include <cstdio>
 
 // Forward references
 class BulletSim;
@@ -98,14 +81,6 @@ struct BULLETSIM_API WorldData
 	typedef std::map<IDTYPE, btCollisionObject*> SpecialCollisionObjectMapType;
 	SpecialCollisionObjectMapType specialCollisionObjects;
 
-	// GPU acceleration members
-	b3GpuRigidBodyPipeline* gpuPipeline;
-	b3GpuBroadphaseInterface* gpuBroadphase;
-	b3GpuNarrowPhase* gpuNarrowphase;
-	cl_context openclContext;
-	cl_command_queue openclQueue;
-	cl_device_id openclDevice;
-
 	// DEBUGGGING
 	// ============================================================================================
 	// Callback to managed code for logging
@@ -125,8 +100,7 @@ struct BULLETSIM_API WorldData
 		}
 	}
 	*/
-	// Call back into the managed world to output a log message with formatting
-	
+	// Call back into the managed world to output a log message with formatting	
 	void BSLog(const char* msg, ...);
     	void BSLog2(const char* msg, va_list argp);
 
