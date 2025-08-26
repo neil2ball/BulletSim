@@ -125,7 +125,8 @@ struct BULLETSIM_API WorldData
 		}
 	}
 	*/
-	// Call back into the managed world to output a log message with formatting	
+	// Call back into the managed world to output a log message with formatting
+	
 	void BSLog(const char* msg, ...);
     	void BSLog2(const char* msg, va_list argp);
 
