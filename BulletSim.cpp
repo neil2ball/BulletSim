@@ -69,6 +69,10 @@ BulletSim::BulletSim(btScalar maxX, btScalar maxY, btScalar maxZ)
 
 	m_worldData.MinPosition = btVector3(0, 0, 0);
 	m_worldData.MaxPosition = btVector3(maxX, maxY, maxZ);
+	
+	//increase sub‑step resolution and filter by contact impulse
+	m_maxSubSteps = DEFAULT_MAX_SUBSTEPS;
+	m_contactImpulseThreshold = DEFAULT_CONTACT_IMPULSE_THRESHOLD;
 }
 
 // Called when a collision point is being added to the manifold.
@@ -138,6 +142,12 @@ static void SubstepCollisionCallback(btDynamicsWorld *world, btScalar timeStep) 
 
 		// When two objects collide, we only report one contact point
 		const btManifoldPoint& manifoldPoint = contactManifold->getContactPoint(0);
+		
+		//increase sub‑step resolution and filter by contact impulse
+		if (manifoldPoint.getAppliedImpulse() < bulletSim->getContactImpulseThreshold()) {
+			continue; // Skip micro-collisions
+		}
+		
 		const btVector3& contactPoint = manifoldPoint.getPositionWorldOnB();
 		const btVector3 contactNormal = -manifoldPoint.m_normalWorldOnB;	// make relative to A
 		const float penetration = manifoldPoint.getDistance();
@@ -352,8 +362,13 @@ int BulletSim::PhysicsStep2(btScalar timeStep, int maxSubSteps, btScalar fixedTi
 
 		// The simulation calls the SimMotionState to put object updates into updatesThisFrame.
 		// m_worldData.BSLog("Before step");
-		numSimSteps = m_worldData.dynamicsWorld->stepSimulation(timeStep, maxSubSteps, fixedTimeStep);
+		// numSimSteps = m_worldData.dynamicsWorld->stepSimulation(timeStep, maxSubSteps, fixedTimeStep);
 		// m_worldData.BSLog("After step. Steps=%d,updates=%d", numSimSteps, m_worldData.updatesThisFrame.size());
+		
+		//increase sub‑step resolution and filter by contact impulse
+		int actualMaxSubSteps = (maxSubSteps > 0) ? maxSubSteps : m_maxSubSteps;
+        
+        numSimSteps = m_worldData.dynamicsWorld->stepSimulation(timeStep, actualMaxSubSteps, fixedTimeStep);
 
 		if (m_dumpStatsCount != 0)
 		{
@@ -1176,6 +1191,17 @@ bool BulletSim::UpdateParameter2(IDTYPE localID, const char* parm, float val)
 		m_worldData.dynamicsWorld->setGravity(btVector3(0.f, 0.f, val));
 		return true;
 	}
+	//increase sub‑step resolution and filter by contact impulse
+	else if (strcmp(parm, "max_substeps") == 0)
+    {
+        m_maxSubSteps = (int)val;
+        return true;
+    }
+    else if (strcmp(parm, "contact_impulse_threshold") == 0)
+    {
+        m_contactImpulseThreshold = val;
+        return true;
+    }
 	return false;
 }
 

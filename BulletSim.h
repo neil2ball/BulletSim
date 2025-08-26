@@ -62,6 +62,12 @@
 //   This uses the "#" pre-processor operator to stringify the variable and that adjacent strings are concatinated.
 #define MACRO_AS_STRING1(X) #X
 #define MACRO_AS_STRING(X) MACRO_AS_STRING1(X)
+
+//increase sub‑step resolution and filter by contact impulse
+static const int    DEFAULT_MAX_SUBSTEPS = 12;
+static const float  DEFAULT_CONTACT_IMPULSE_THRESHOLD = 0.2f;
+
+
 static std::string BulletSimVersionString = MACRO_AS_STRING(BULLETSIMVERSION) "," MACRO_AS_STRING(BULLETVERSION);
 
 // Helper method to determine if an object is phantom or not
@@ -264,6 +270,11 @@ protected:
 class BulletSim
 {
 private:
+	//increase sub‑step resolution and filter by contact impulse
+	int m_maxSubSteps;
+    float m_contactImpulseThreshold;
+	
+	
 	// Bullet world objects
 	btBroadphaseInterface* m_broadphase;
 	btCollisionDispatcher* m_dispatcher;
@@ -284,7 +295,11 @@ private:
 	std::set<COLLIDERKEYTYPE> m_collidersThisFrame;
 
 public:
-
+	//increase sub‑step resolution and filter by contact impulse
+    void SetMaxSubSteps(int steps) { m_maxSubSteps = steps; }
+    void SetContactImpulseThreshold(float threshold) { m_contactImpulseThreshold = threshold; }
+    float getContactImpulseThreshold() const { return m_contactImpulseThreshold; }
+	
 	BulletSim(btScalar maxX, btScalar maxY, btScalar maxZ);
 
 	virtual ~BulletSim()
