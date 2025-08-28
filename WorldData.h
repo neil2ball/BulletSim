@@ -42,29 +42,16 @@
 
 #include "ArchStuff.h"
 #include "APIData.h"
-#include "btBulletDynamicsCommon.h"
 
-// Include GPU acceleration headers if available
-#if defined(USE_GPU_ACCELERATION)
 #include "Bullet3OpenCL/Initialize/b3OpenCLUtils.h"
 #include "Bullet3OpenCL/BroadphaseCollision/b3GpuBroadphaseInterface.h"
-#include "Bullet3OpenCL/BroadphaseCollision/b3GpuSapBroadphase.h"
 #include "Bullet3OpenCL/RigidBody/b3GpuNarrowPhase.h"
 #include "Bullet3OpenCL/RigidBody/b3GpuRigidBodyPipeline.h"
-#else
-// Forward declarations for when GPU is disabled
-class b3GpuRigidBodyPipeline;
-class b3GpuBroadphaseInterface;
-class b3GpuNarrowPhase;
-#endif
+#include "Bullet3Common/b3Vector3.h"
+#include "Bullet3Common/b3Quaternion.h"
+#include "Bullet3Common/b3Transform.h"
 
-#include <stdarg.h>
-#include <map>
-
-#include <cstdarg>
-#include <cstdio>
-
-// Forward references
+// Forward declarations
 class BulletSim;
 class ObjectCollection;
 class HeightMapData;
@@ -72,9 +59,23 @@ class IPhysObject;
 class TerrainObject;
 class GroundPlaneObject;
 
+// Forward declarations for GPU components
+class b3GpuRigidBodyPipeline;
+class b3GpuBroadphaseInterface;
+class b3GpuNarrowPhase;
+
+#include <stdarg.h>
+#include <map>
+#include <cstdarg>
+#include <cstdio>
+
 // template for debugging call
 typedef void DebugLogCallback(const char*);
 
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable:4251)
+#endif
 // Structure to hold the world data that is common to all the objects in the world
 struct BULLETSIM_API WorldData
 {
@@ -82,12 +83,12 @@ struct BULLETSIM_API WorldData
 
 	ParamBlock* params;
 	
-	// pointer to the containing world control structure
-	btDynamicsWorld* dynamicsWorld;
-
+	// The main dynamics world
+	//btDynamicsWorld* dynamicsWorld;
+	
 	// The minimum and maximum points in the defined physical space
-	btVector3 MinPosition;
-	btVector3 MaxPosition;
+	b3Vector3 MinPosition;
+	b3Vector3 MaxPosition;
 
 	// Used to expose updates from Bullet to the BulletSim API
 	typedef std::map<IDTYPE, EntityProperties*> UpdatesThisFrameMapType;
@@ -95,8 +96,8 @@ struct BULLETSIM_API WorldData
 
 	// Some collisionObjects can set themselves up for special collision processing.
 	// This is used for ghost objects to be handed in the simulation step.
-	typedef std::map<IDTYPE, btCollisionObject*> SpecialCollisionObjectMapType;
-	SpecialCollisionObjectMapType specialCollisionObjects;
+	//typedef std::map<IDTYPE, btCollisionObject*> SpecialCollisionObjectMapType;
+	//SpecialCollisionObjectMapType specialCollisionObjects;
 
 	// GPU acceleration members
 	b3GpuRigidBodyPipeline* gpuPipeline;
@@ -113,90 +114,23 @@ struct BULLETSIM_API WorldData
 	// This callback is only initialized if the simulator is running in DEBUG mode.
 	DebugLogCallback* debugLogCallback;
 
-	/*
-	void BSLog(const char* msg, ...) {
-		char buff[2048];
-		if (debugLogCallback != NULL) {
-			va_list args;
-			va_start(args, msg);
-			vsprintf(buff, msg, args);
-			va_end(args);
-			(*debugLogCallback)(buff);
-		}
-	}
-	*/
-	// Call back into the managed world to output a log message with formatting	
-	void BSLog(const char* msg, ...);
-    	void BSLog2(const char* msg, va_list argp);
-
+	void BSLog(const char* format, ...) {
+        va_list args;
+        va_start(args, format);
+        vprintf(format, args);
+        va_end(args);
+        printf("\n");
+    }
+    void BSLog2(const char* msg, va_list argp);
 
 	void	dumpAll()
 	{
 		BSLog("PROFILE LOGGING IS NOT ENABLED IN BULLET");
 	}
-
-	/*	Uncomment this if profiling is turned on in Bullet.
-	// The following code was borrowed directly from Bullet.
-	// The Bullet dumper uses printf to output stats and BulletSim needs it to call BSLog.]
-	// Just copying the code here turned out to be the quickest and easiest solution.
-	void dumpRecursive(CProfileIterator* profileIterator, int spacing)
-	{
-		profileIterator->First();
-		if (profileIterator->Is_Done())
-			return;
-
-		char dots[256];
-		for (int ii=0; ii<spacing; ii++)
-			dots[ii] = '.';
-		dots[spacing] = '\0';
-
-		float accumulated_time=0,parent_time = profileIterator->Is_Root() ? CProfileManager::Get_Time_Since_Reset() : profileIterator->Get_Current_Parent_Total_Time();
-		int i;
-		int frames_since_reset = CProfileManager::Get_Frame_Count_Since_Reset();
-		BSLog("%s----------------------------------", dots);
-		BSLog("%sProfiling: %s (total running time: %.3f ms) ---",dots,profileIterator->Get_Current_Parent_Name(), parent_time );
-		float totalTime = 0.f;
-
-		
-		int numChildren = 0;
-		
-		for (i = 0; !profileIterator->Is_Done(); i++,profileIterator->Next())
-		{
-			numChildren++;
-			float current_total_time = profileIterator->Get_Current_Total_Time();
-			accumulated_time += current_total_time;
-			float fraction = parent_time > SIMD_EPSILON ? (current_total_time / parent_time) * 100 : 0.f;
-			BSLog("%s%d -- %s (%.2f %%) :: %.3f ms / frame (%d calls)",dots,i, profileIterator->Get_Current_Name(), fraction,(current_total_time / (double)frames_since_reset),profileIterator->Get_Current_Total_Calls());
-			totalTime += current_total_time;
-			//recurse into children
-		}
-
-		if (parent_time < accumulated_time)
-		{
-			BSLog("what's wrong");
-		}
-		BSLog("%s%s (%.3f %%) :: %.3f ms", dots,"Unaccounted:",parent_time > SIMD_EPSILON ? ((parent_time - accumulated_time) / parent_time) * 100 : 0.f, parent_time - accumulated_time);
-		
-		for (i=0;i<numChildren;i++)
-		{
-			profileIterator->Enter_Child(i);
-			dumpRecursive(profileIterator,spacing+3);
-			profileIterator->Enter_Parent();
-		}
-	}
-
-	void	dumpAll()
-	{
-		CProfileIterator* profileIterator = 0;
-		profileIterator = CProfileManager::Get_Iterator();
-
-		dumpRecursive(profileIterator,0);
-
-		CProfileManager::Release_Iterator(profileIterator);
-	}
-	*/
-
 };
 
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 #endif // WORLD_DATA_H

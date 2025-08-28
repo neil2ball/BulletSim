@@ -29,8 +29,12 @@
 #ifndef API_DATA_H
 #define API_DATA_H
 
+#include "Bullet3OpenCL/RigidBody/b3GpuRigidBodyPipeline.h"
+#include "Bullet3Common/b3Vector3.h"
+#include "Bullet3Common/b3Quaternion.h"
+#include "Bullet3Common/b3Transform.h"
+
 #include "ArchStuff.h"
-#include "btBulletDynamicsCommon.h"
 
 // Fixed object ID codes used by OpenSimulator
 #define ID_TERRAIN 0	// OpenSimulator identifies collisions with terrain by localID of zero
@@ -63,7 +67,7 @@ struct Vector3
 		Z = z;
 	}
 
-	Vector3(const btVector3& v)
+	Vector3(const b3Vector3& v)
 	{
 		X = v.getX();
 		Y = v.getY();
@@ -78,12 +82,14 @@ struct Vector3
 			(((v.Z - nEpsilon) < Z) && (Z < (v.Z + nEpsilon)));
 	}
 
-	btVector3 GetBtVector3()
+	b3Vector3 GetBtVector3()
 	{
-		return btVector3(X, Y, Z);
+		b3Vector3 someVector;
+		someVector.setValue(0.0, 0.0, 0.0);
+		return someVector;
 	}
 
-	void operator= (const btVector3& v)
+	void operator= (const b3Vector3& v)
 	{
 		X = v.getX();
 		Y = v.getY();
@@ -129,7 +135,7 @@ struct Quaternion
 		W = ww;
 	}
 
-	Quaternion(const btQuaternion& btq)
+	Quaternion(const b3Quaternion& btq)
 	{
 		X = btq.getX();
 		Y = btq.getY();
@@ -146,12 +152,12 @@ struct Quaternion
 			(((q.W - nEpsilon) < W) && (W < (q.W + nEpsilon)));
 	}
 
-	btQuaternion GetBtQuaternion()
+	b3Quaternion GetBtQuaternion()
 	{
-		return btQuaternion(X, Y, Z, W);
+		return b3Quaternion(X, Y, Z, W);
 	}
 
-	void operator= (const btQuaternion& q)
+	void operator= (const b3Quaternion& q)
 	{
 		X = q.getX();
 		Y = q.getY();
@@ -170,15 +176,15 @@ public:
 		m_el[1] = Vector3(0.0, 1.0, 0.0);
 		m_el[2] = Vector3(0.0, 0.0, 1.0);
 	}
-	void operator= (const btMatrix3x3& o)
+	void operator= (const b3Matrix3x3& o)
 	{
 		m_el[0] = o.getRow(0);
 		m_el[1] = o.getRow(1);
 		m_el[2] = o.getRow(2);
 	}
-	btMatrix3x3 GetBtMatrix3x3()
+	b3Matrix3x3 GetBtMatrix3x3()
 	{
-		return btMatrix3x3(
+		return b3Matrix3x3(
 			m_el[0].X, m_el[0].Y, m_el[0].Z,
 			m_el[1].X, m_el[1].Y, m_el[1].Z,
 			m_el[2].X, m_el[2].Y, m_el[2].Z );
@@ -187,8 +193,8 @@ public:
 
 struct Transform
 {
-	// A btTransform is made of a 3x3 array plus a btVector3 copy of the origin.
-	// Note that a btVector3 is defined as 4 floats (probably for alignment)
+	// A b3Transform is made of a 3x3 array plus a b3Vector3 copy of the origin.
+	// Note that a b3Vector3 is defined as 4 floats (probably for alignment)
 	//    which is why the assignment is done explicitly to get type conversion.
 	Matrix3x3 m_basis;
 	Vector3 m_origin;
@@ -197,14 +203,14 @@ public:
 		m_basis = Matrix3x3();
 		m_origin = Vector3();
 	}
-	Transform(const btTransform& t)
+	Transform(const b3Transform& t)
 	{
 		m_basis = t.getBasis();
 		m_origin = t.getOrigin();
 	}
-	btTransform GetBtTransform()
+	b3Transform GetBtTransform()
 	{
-		return btTransform(m_basis.GetBtMatrix3x3(), m_origin.GetBtVector3());
+		return b3Transform(m_basis.GetBtMatrix3x3(), m_origin.GetBtVector3());
 	}
 
 };
@@ -305,11 +311,11 @@ struct EntityProperties
 	EntityProperties()
 	{
 		ID = 0;
-		Position = btVector3();
-		Rotation = btQuaternion();
+		Position = b3Vector3();
+		Rotation = b3Quaternion();
 	}
 
-	EntityProperties(IDTYPE id, const btTransform& startTransform)
+	EntityProperties(IDTYPE id, const b3Transform& startTransform)
 	{
 		ID = id;
 		Position = startTransform.getOrigin();
@@ -409,29 +415,6 @@ struct HACDParams
 	float vHACDminVolumePerCH;		// sampling of generated convex hulls
 	float vHACDconvexHullApprox;	// approximate hulls to accelerate computation
 	float vHACDoclAcceleration;		// use OpenCL
-};
-
-// Structure for describing collision shapes
-struct ShapeDesc
-{
-    ShapeType Type;
-    union
-    {
-        struct { btVector3 HalfExtents; } Box;
-        struct { btScalar Radius; } Sphere;
-        struct { btVector3 HalfExtents; } Cylinder;
-        struct { btScalar Radius; btScalar Height; } Capsule;
-        struct { btScalar Radius; btScalar Height; } Cone;
-        struct { int SphereCount; btVector3* Positions; btScalar* Radii; } MultiSphere;
-        struct { int HullCount; float* Hulls; } ConvexHull;
-        struct { int IndicesCount; int* Indices; int VerticesCount; float* Vertices; } TriangleMesh;
-        struct { int IndicesCount; int* Indices; int VerticesCount; float* Vertices; } GImpact;
-        struct { int ChildCount; btCollisionShape** ChildShapes; btTransform* ChildTransforms; } Compound;
-        struct { btVector3 PlaneNormal; btScalar PlaneConstant; } Plane;
-        struct { int Width; int Length; float* HeightData; btScalar MinHeight; btScalar MaxHeight; } Heightfield;
-        struct { int IndicesCount; int* Indices; int VerticesCount; float* Vertices; HACDParams Params; } HACD;
-        struct { int IndicesCount; int* Indices; int VerticesCount; float* Vertices; HACDParams Params; } VHACD;
-    } Data;
 };
 
 #define CONSTRAINT_NOT_SPECIFIED (-1)
