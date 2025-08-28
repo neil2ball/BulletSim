@@ -29,11 +29,16 @@
 #include "Util.h"
 #include <stdarg.h>
 
+#include "Bullet3OpenCL/RigidBody/b3GpuRigidBodyPipeline.h"
+#include "Bullet3Common/b3Vector3.h"
+#include "Bullet3Common/b3Quaternion.h"
+
 #include "BulletCollision/CollisionDispatch/btSimulationIslandManager.h"
 #include "BulletCollision/CollisionShapes/btHeightfieldTerrainShape.h"
 #include "BulletCollision/BroadphaseCollision/btBroadphaseProxy.h"
 
 #include <map>
+#include <cstdint>
 
 #if defined(_WIN32) || defined(_WIN64)
     #define DLL_EXPORT __declspec( dllexport )
@@ -438,7 +443,7 @@ EXTERN_C DLL_EXPORT bool IsNativeShape2(btCollisionShape* shape)
 
 EXTERN_C DLL_EXPORT void SetShapeCollisionMargin(btCollisionShape* shape, float margin)
 {
-	bsDebug_AssertIsKnownCollisionShape(obj, "SetShapeCollisonMargin: unknown collisionShape");
+	bsDebug_AssertIsKnownCollisionShape(shape, "SetShapeCollisonMargin: unknown collisionShape");
 	shape->setMargin(btScalar(margin));
 }
 
@@ -536,7 +541,42 @@ EXTERN_C DLL_EXPORT btCollisionObject* CreateBodyFromShape2(BulletSim* sim, btCo
 	motionState->RigidBody = body;
 
 	body->setUserPointer(PACKLOCALID(id));
-	bsDebug_RememberCollisionObject(obj);
+	bsDebug_RememberCollisionObject(body); // Fixed variable name from obj to body
+	
+	// Determine if body should be on GPU or CPU
+    bool useGpu = sim->isGpuAvailable() && 
+                 (shape->isConvex() || shape->getShapeType() == TRIANGLE_MESH_SHAPE_PROXYTYPE);
+    if (useGpu) {
+		
+		// Get the collision shape index
+		int collidableIndex = sim->registerGpuShape(shape);
+		
+		btVector3 position = pos.GetBtVector3();
+		btQuaternion orientation = rot.GetBtQuaternion();
+
+		float posArray[4] = {position.x(), position.y(), position.z(), 0.f};
+		float rotArray[4] = {orientation.x(), orientation.y(), orientation.z(), orientation.w()};
+
+		// Call registerPhysicsInstance with correct number of arguments
+		int gpuId = sim->getGpuPipeline()->registerPhysicsInstance(
+			body->getMass(),                    // float mass
+			posArray,        					// const float* position 
+			rotArray,     						// const float* orientation
+			collidableIndex,                    // int collisionShapeIndex
+			id,                                 // int userData
+			true                                // bool writeInstanceToGpu
+		);
+
+		sim->registerGpuBody(id, gpuId);
+        
+        // Still add to CPU world for hybrid mode or fallback
+        sim->getDynamicsWorld()->addRigidBody(body);
+        sim->registerCpuBody(id);
+    } else {
+        // Add to CPU world
+        sim->getDynamicsWorld()->addRigidBody(body);
+        sim->registerCpuBody(id);
+    }
 
 	return body;
 }

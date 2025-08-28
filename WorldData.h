@@ -42,21 +42,23 @@
 
 #include "ArchStuff.h"
 #include "APIData.h"
-#include "btBulletDynamicsCommon.h"
+
 
 // Include GPU acceleration headers if available
-#if defined(USE_GPU_ACCELERATION)
 #include "Bullet3OpenCL/Initialize/b3OpenCLUtils.h"
 #include "Bullet3OpenCL/BroadphaseCollision/b3GpuBroadphaseInterface.h"
 #include "Bullet3OpenCL/BroadphaseCollision/b3GpuSapBroadphase.h"
 #include "Bullet3OpenCL/RigidBody/b3GpuNarrowPhase.h"
 #include "Bullet3OpenCL/RigidBody/b3GpuRigidBodyPipeline.h"
-#else
+
+#include "Bullet3Common/b3Vector3.h"
+#include "LinearMath/btVector3.h"
+#include "btBulletDynamicsCommon.h"
+
 // Forward declarations for when GPU is disabled
 class b3GpuRigidBodyPipeline;
 class b3GpuBroadphaseInterface;
 class b3GpuNarrowPhase;
-#endif
 
 #include <stdarg.h>
 #include <map>

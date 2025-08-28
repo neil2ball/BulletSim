@@ -38,30 +38,76 @@
 #include "APIData.h"
 #include "WorldData.h"
 
-#include "BulletCollision/CollisionDispatch/btGhostObject.h"
-#include "LinearMath/btAlignedObjectArray.h"
-#include "LinearMath/btMotionState.h"
-#include "btBulletDynamicsCommon.h"
+#include "Bullet3Common/b3Vector3.h"
+#include "Bullet3Common/b3Quaternion.h"
+#include "Bullet3Common/b3Transform.h"
+
+
 
 // Add GPU acceleration includes
-#if defined(USE_GPU_ACCELERATION)
 #include "Bullet3OpenCL/Initialize/b3OpenCLUtils.h"
 #include "Bullet3OpenCL/BroadphaseCollision/b3GpuBroadphaseInterface.h"
 #include "Bullet3OpenCL/BroadphaseCollision/b3GpuSapBroadphase.h"
 #include "Bullet3OpenCL/RigidBody/b3GpuNarrowPhase.h"
 #include "Bullet3OpenCL/RigidBody/b3GpuRigidBodyPipeline.h"
-#else
-// Forward declarations for when GPU is disabled
-class b3GpuRigidBodyPipeline;
-class b3GpuBroadphaseInterface;
-class b3GpuNarrowPhase;
-#endif
+
+#include "BulletCollision/CollisionDispatch/btGhostObject.h"
+#include "LinearMath/btAlignedObjectArray.h"
+#include "LinearMath/btMotionState.h"
+#include "btBulletDynamicsCommon.h"
 
 // Add missing include for btDynamicsWorld methods
 #include "BulletDynamics/Dynamics/btDiscreteDynamicsWorld.h"
 
 #include <set>
 #include <map>
+#include <vector>
+#include <cstdint> // For uint32_t
+
+class b3GpuRigidBodyPipeline;
+class b3GpuBroadphaseInterface;
+class b3GpuNarrowPhase;
+struct b3RigidBodyData;
+
+inline btVector3 b3ToBt(const b3Vector3& v) {
+    return btVector3(v.x, v.y, v.z);
+}
+
+inline b3Vector3 btToB3(const btVector3& v) {
+    b3Vector3 result;
+    result.setValue(v.x(), v.y(), v.z());
+    return result;
+}
+
+struct BulletGPUSettings {
+    int MaxConvexBodies;
+    int MaxConvexShapes;
+    int MaxBroadphasePairs;
+    int MaxContactCapacity;
+    int CompoundPairCapacity;
+    int MaxVerticesPerFace;
+    int MaxFacesPerShape;
+    int MaxConvexVertices;
+    int MaxConvexIndices;
+    int MaxConvexUniqueEdges;
+    int MaxCompoundChildShapes;
+    int MaxTriConvexPairCapacity;
+    
+    // Constructor with theoretical OpenSim default values for 8GB GPU
+    BulletGPUSettings() :
+        MaxConvexBodies(50000),				// Up to 50,000 physics objects (vs default 131,072) [Memory Resource Reallocation]
+        MaxConvexShapes(15000),				// 15,000 unique shapes (vs default 131,072) [Memory Resource Reallocation]
+        MaxBroadphasePairs(2000000),		// 2 million potential collision pairs (vs default 2,097,152) [Memory Resource Reallocation]
+        MaxContactCapacity(500000),			// 500,000 simultaneous contacts (vs default 2,097,152) [Memory Resource Reallocation]
+        CompoundPairCapacity(100000),		// 100,000 compound object pairs (vs default 1,048,576) [Memory Resource Reallocation]
+        MaxVerticesPerFace(64),				// same as OpenCL default - Maximum number of vertices allowed in a single face/polygon
+        MaxFacesPerShape(12),				// same as OpenCL default - Maximum number of faces/polygons a convex shape can have
+        MaxConvexVertices(8192),			// same as OpenCL default - Maximum total vertices for all convex shapes in the simulation
+        MaxConvexIndices(81920),			// same as OpenCL default - Maximum total indices (vertex connections) for convex shapes
+        MaxConvexUniqueEdges(8192),			// same as OpenCL default - Maximum unique edges for convex shape collision detection
+        MaxCompoundChildShapes(8192),		// same as OpenCL default - Maximum child shapes allowed in compound objects
+        MaxTriConvexPairCapacity(262144) {} // same as OpenCL default - Maximum triangle-convex collision pairs for mesh vs convex collisions
+};
 
 // Vertex array that manages the memory for copied mesh data to prevent leaks
 class ManagedTriangleIndexVertexArray : public btTriangleIndexVertexArray
@@ -314,6 +360,12 @@ protected:
 class BulletSim
 {
 private:
+
+	// In BulletSim.h, add these to the private section of the BulletSim class
+	b3DynamicBvhBroadphase* m_broadphaseDbvt;
+	b3Config m_config;
+	BulletGPUSettings gpuSettings; // Add this near other GPU-related members
+	
 	//increase sub-step resolution and filter by contact impulse
 	int m_maxSubSteps;
     float m_contactImpulseThreshold;
@@ -325,14 +377,19 @@ private:
 	btConstraintSolver*	m_solver;
 	btDefaultCollisionConfiguration* m_collisionConfiguration;
 
-	// GPU acceleration objects
-	b3GpuRigidBodyPipeline* m_gpuPipeline;
-	b3GpuBroadphaseInterface* m_gpuBroadphase;
-	b3GpuNarrowPhase* m_gpuNarrowphase;
-	cl_context m_openclContext;
-	cl_command_queue m_openclQueue;
-	cl_device_id m_openclDevice;
+	bool m_gpuAvailable = false;
+	
+    b3GpuRigidBodyPipeline* m_gpuPipeline = nullptr;
+    b3GpuBroadphaseInterface* m_gpuBroadphase = nullptr;
+    b3GpuNarrowPhase* m_gpuNarrowphase = nullptr;
+    cl_context m_openclContext = nullptr;
+    cl_command_queue m_openclQueue = nullptr;
+    cl_device_id m_openclDevice = nullptr;
+	std::map<btCollisionShape*, int> m_gpuShapeMap; // Maps CPU shapes to GPU shape indices
 
+    std::vector<uint32_t> m_gpuBodyIds;
+    std::vector<uint32_t> m_cpuBodyIds;
+	
 	int m_dumpStatsCount;
 
 	// Information about the world that is shared with all the objects
@@ -347,10 +404,27 @@ private:
 	std::set<COLLIDERKEYTYPE> m_collidersThisFrame;
 
 public:
+	
+	int registerGpuShape(btCollisionShape* shape);
+	// GPU acceleration objects
+	bool isGpuAvailable() const { return m_gpuAvailable; }
+    b3GpuRigidBodyPipeline* getGpuPipeline() { return m_gpuPipeline; }
+    void registerGpuBody(uint32_t id, uint32_t gpuId);
+    void registerCpuBody(uint32_t id);
+
 	//increase sub-step resolution and filter by contact impulse
     void SetMaxSubSteps(int steps) { m_maxSubSteps = steps; }
     void SetContactImpulseThreshold(float threshold) { m_contactImpulseThreshold = threshold; }
     float getContactImpulseThreshold() const { return m_contactImpulseThreshold; }
+	
+	// Keep existing method for collision objects
+    btCollisionObject* findBodyById(uint32_t id);
+    
+    // Add rigid body specific version if needed
+    btRigidBody* findRigidBodyById(uint32_t id);
+    
+    // Declare the new synchronization method
+    void synchronizeGpuCpuData();
 	
 	BulletSim(btScalar maxX, btScalar maxY, btScalar maxZ);
 

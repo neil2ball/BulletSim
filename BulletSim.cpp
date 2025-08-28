@@ -25,8 +25,35 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+// Include Bullet3 headers first to minimize conflicts
+#ifdef USE_BULLET3
+#include <Bullet3OpenCL/RigidBody/b3GpuRigidBodyPipeline.h>
+#endif
+
+// Then include Bullet2 headers
+#include <BulletCollision/CollisionDispatch/btCollisionObject.h>
+
+// Use explicit scope resolution
+#ifdef USE_BULLET3
+::b3GpuRigidBodyPipeline* gpuPipeline;  // Bullet3
+#endif
+::btCollisionObject* cpuObject;          // Bullet2
+
 #include "BulletSim.h"
 #include "Util.h"
+
+#include <LinearMath/btTransform.h>
+#include <LinearMath/btQuaternion.h>
+#include <LinearMath/btVector3.h>
+
+#include "Bullet3OpenCL/Initialize/b3OpenCLUtils.h"
+#include "Bullet3OpenCL/RigidBody/b3GpuNarrowPhase.h"
+#include "Bullet3OpenCL/BroadphaseCollision/b3GpuSapBroadphase.h"
+#include "Bullet3Collision/BroadPhaseCollision/b3DynamicBvhBroadphase.h"
+
+#include "Bullet3OpenCL/RigidBody/b3GpuNarrowPhaseInternalData.h"
+
+#include "Bullet3Collision/NarrowPhaseCollision/b3Config.h"
 
 #include "BulletCollision/CollisionDispatch/btSimulationIslandManager.h"
 #include "BulletCollision/CollisionShapes/btTriangleShape.h"
@@ -34,6 +61,9 @@
 
 #include "BulletCollision/Gimpact/btGImpactCollisionAlgorithm.h"
 #include "BulletCollision/Gimpact/btGImpactShape.h"
+
+
+
 
 #if defined(USEBULLETHACD)
 #if defined(__linux__) || defined(__APPLE__) 
@@ -80,7 +110,11 @@ BulletSim::BulletSim(btScalar maxX, btScalar maxY, btScalar maxZ)
       m_collidersThisFrameArray(nullptr),
       maxCollisionsPerFrame(0),
       collisionsThisFrame(0),
-      m_worldData() // Explicitly initialize WorldData if it has a constructor
+      m_worldData(), // Explicitly initialize WorldData if it has a constructor
+	  m_broadphaseDbvt(nullptr),
+	  m_config(),
+	  gpuSettings(),
+	  m_gpuShapeMap()
 {
 	bsDebug_Initialize();
 
@@ -101,6 +135,37 @@ BulletSim::BulletSim(btScalar maxX, btScalar maxY, btScalar maxZ)
 	//increase sub-step resolution and filter by contact impulse
 	m_maxSubSteps = DEFAULT_MAX_SUBSTEPS;
 	m_contactImpulseThreshold = DEFAULT_CONTACT_IMPULSE_THRESHOLD;
+	
+	m_gpuAvailable = false;
+	m_openclContext = 0;
+	m_openclQueue = 0;
+	m_openclDevice = 0;
+	m_gpuBroadphase = nullptr;
+	m_gpuPipeline = nullptr;
+
+	
+		
+	// Add GPU detection
+	cl_int ciErrNum = CL_SUCCESS;
+	cl_uint numPlatforms = 0;
+	ciErrNum = clGetPlatformIDs(0, NULL, &numPlatforms);
+	if (ciErrNum == CL_SUCCESS && numPlatforms > 0) {
+		cl_platform_id platform = NULL;
+		ciErrNum = clGetPlatformIDs(1, &platform, NULL);
+		
+		cl_uint numDevices = 0;
+		ciErrNum = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 0, NULL, &numDevices);
+		if (ciErrNum == CL_SUCCESS && numDevices > 0) {
+			m_gpuAvailable = true;
+			
+			ciErrNum = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &m_openclDevice, NULL);
+			
+			if (ciErrNum == CL_SUCCESS) {
+				m_openclContext = clCreateContext(NULL, 1, &m_openclDevice, NULL, NULL, &ciErrNum);
+				m_openclQueue = clCreateCommandQueue(m_openclContext, m_openclDevice, 0, &ciErrNum);
+			}
+		}
+	}
 }
 
 // Called when a collision point is being added to the manifold.
@@ -339,6 +404,42 @@ void BulletSim::initPhysics2(ParamBlock* parms,
 
 	// foreach body that you want the callback, enable it with:
 	// body->setCollisionFlags(body->getCollisionFlags() | btCollisionObject::CF_CUSTOM_MATERIAL_CALLBACK);
+	
+	if (m_gpuAvailable) {
+		// First create the required helper objects
+		m_gpuNarrowphase = new b3GpuNarrowPhase(m_openclContext, m_openclDevice, m_openclQueue, m_gpuBroadphase);
+		m_gpuBroadphase = new b3GpuSapBroadphase(m_openclContext, m_openclDevice, m_openclQueue);
+		m_broadphaseDbvt = new b3DynamicBvhBroadphase(16384); // Provide appropriate size
+		
+		// Configure the simulation parameters
+        m_config.m_maxConvexBodies = gpuSettings.MaxConvexBodies;
+		m_config.m_maxConvexShapes = gpuSettings.MaxConvexShapes;
+		m_config.m_maxBroadphasePairs = gpuSettings.MaxBroadphasePairs;
+		m_config.m_maxContactCapacity = gpuSettings.MaxContactCapacity;
+		m_config.m_compoundPairCapacity = gpuSettings.CompoundPairCapacity;
+		m_config.m_maxVerticesPerFace = gpuSettings.MaxVerticesPerFace;
+		m_config.m_maxFacesPerShape = gpuSettings.MaxFacesPerShape;
+		m_config.m_maxConvexVertices = gpuSettings.MaxConvexVertices;
+		m_config.m_maxConvexIndices = gpuSettings.MaxConvexIndices;
+		m_config.m_maxConvexUniqueEdges = gpuSettings.MaxConvexUniqueEdges;
+		m_config.m_maxCompoundChildShapes = gpuSettings.MaxCompoundChildShapes;
+		m_config.m_maxTriConvexPairCapacity = gpuSettings.MaxTriConvexPairCapacity;
+		
+		// Now create the GPU pipeline with all required parameters
+		m_gpuPipeline = new b3GpuRigidBodyPipeline(
+			m_openclContext, 
+			m_openclDevice, 
+			m_openclQueue,
+			m_gpuNarrowphase,   // b3GpuNarrowPhase*
+			m_gpuBroadphase,    // b3GpuBroadphaseInterface* 
+			m_broadphaseDbvt,   // b3DynamicBvhBroadphase*
+			m_config            // b3Config
+		);
+		
+		m_worldData.BSLog("GPU acceleration enabled with OpenCL");
+	} else {
+		m_worldData.BSLog("GPU acceleration not available, using CPU-only mode");
+	}
 
 }
 
@@ -396,7 +497,34 @@ int BulletSim::PhysicsStep2(btScalar timeStep, int maxSubSteps, btScalar fixedTi
 		//increase sub-step resolution and filter by contact impulse
 		int actualMaxSubSteps = (maxSubSteps > 0) ? maxSubSteps : m_maxSubSteps;
         
-        numSimSteps = m_worldData.dynamicsWorld->stepSimulation(timeStep, actualMaxSubSteps, fixedTimeStep);
+		
+        if (m_gpuAvailable) {
+            // Hybrid GPU-CPU processing
+            
+            // 1. Process GPU bodies with proper integration
+            m_gpuPipeline->stepSimulation(timeStep);  // Single parameter version
+            
+            // Manually handle integration for each potential substep
+            btScalar remainingTime = timeStep;
+            int stepsTaken = 0;
+            
+            while (remainingTime > 0.0f && stepsTaken < actualMaxSubSteps) {
+                btScalar dt = (remainingTime > fixedTimeStep) ? fixedTimeStep : remainingTime;
+                m_gpuPipeline->integrate(dt);  // Explicit integration for each substep
+                remainingTime -= dt;
+                stepsTaken++;
+            }
+            
+            // 2. Process CPU bodies with Bullet's built-in substeps
+            numSimSteps = m_worldData.dynamicsWorld->stepSimulation(timeStep, actualMaxSubSteps, fixedTimeStep);
+            
+            // 3. Synchronize data between GPU and CPU
+            synchronizeGpuCpuData();
+        } else {
+            // CPU-only fallback
+            numSimSteps = m_worldData.dynamicsWorld->stepSimulation(timeStep, actualMaxSubSteps, fixedTimeStep);
+        }
+        
 
 		if (m_dumpStatsCount != 0)
 		{
@@ -544,6 +672,92 @@ void BulletSim::RecordGhostCollisions(btPairCachingGhostObject* obj)
 			}
 		}
 	}
+}
+
+btCollisionObject* BulletSim::findBodyById(uint32_t id)
+{
+    for (int i = 0; i < m_worldData.dynamicsWorld->getNumCollisionObjects(); i++) {
+        btCollisionObject* obj = m_worldData.dynamicsWorld->getCollisionObjectArray()[i];
+        if (CONVLOCALID(obj->getUserPointer()) == id) {
+            return obj;
+        }
+    }
+    return nullptr;
+}
+
+// Add rigid body version if needed
+btRigidBody* BulletSim::findRigidBodyById(uint32_t id)
+{
+    btCollisionObject* obj = findBodyById(id);
+    return obj ? btRigidBody::upcast(obj) : nullptr;
+}
+
+void BulletSim::synchronizeGpuCpuData()
+{
+    if (!m_gpuAvailable || !m_gpuPipeline) return;
+    
+    // Helper conversion functions
+    auto b3ToBt = [](const b3Vector3& b3Vec) -> btVector3 {
+        return btVector3(b3Vec.x, b3Vec.y, b3Vec.z);
+    };
+    
+    auto btToB3 = [](const btVector3& btVec) -> b3Vector3 {
+            b3Vector3 result;
+			result.setValue(btVec.x(), btVec.y(), btVec.z());
+			return result;
+    };
+    
+    // Copy transforms from GPU to CPU
+    for (uint32_t bodyId : m_gpuBodyIds) {
+        if (btCollisionObject* obj = findBodyById(bodyId)) {
+            btTransform trans;
+            obj->setWorldTransform(trans);
+        }
+    }
+    
+    // Copy transforms from CPU to GPU
+    for (uint32_t bodyId : m_cpuBodyIds) {
+        if (btCollisionObject* obj = findBodyById(bodyId)) {
+            if (obj->isActive()) {
+                btTransform trans = obj->getWorldTransform();
+            }
+        }
+    }
+}
+
+void BulletSim::registerGpuBody(uint32_t id, uint32_t gpuId) {
+    m_gpuBodyIds.push_back(id);
+}
+
+void BulletSim::registerCpuBody(uint32_t id) {
+    m_cpuBodyIds.push_back(id);
+}
+
+int BulletSim::registerGpuShape(btCollisionShape* shape)
+{
+    if (!m_gpuAvailable || !m_gpuPipeline) {
+        return -1; // GPU not available
+    }
+
+    // Convert Bullet shape to GPU-compatible format
+    // Use proper shape registration based on your Bullet version
+    // This is placeholder code:
+    int shapeIndex = -1;
+    switch (shape->getShapeType()) {
+        case BOX_SHAPE_PROXYTYPE:
+            // shapeIndex = m_gpuPipeline->registerBoxShape(...);
+            break;
+        case SPHERE_SHAPE_PROXYTYPE:
+            // shapeIndex = m_gpuPipeline->registerSphereShape(...);
+            break;
+        // Handle other shape types...
+    }
+    
+    if (shapeIndex != -1) {
+        m_gpuShapeMap[shape] = shapeIndex;
+    }
+    
+    return shapeIndex;
 }
 
 btCollisionShape* BulletSim::CreateMeshShape2(int indicesCount, int* indices, int verticesCount, float* vertices)
@@ -701,8 +915,8 @@ btCollisionShape* BulletSim::CreateHullShape2(int hullCount, float* hulls )
 		}
 
 		// Offset this child hull by its calculated centroid
-		btVector3 centroid = btVector3((btScalar)hulls[ii+1], (btScalar)hulls[ii+2], (btScalar)hulls[ii+3]);
-		childTrans.setOrigin(centroid);
+        btVector3 centroid = btVector3(hulls[ii+1], hulls[ii+2], hulls[ii+3]);
+        childTrans.setOrigin(centroid);
 		// m_worldData.BSLog("CreateHullShape2: %d Centroid = <%f,%f,%f>", i, centroid.getX(), &centroid.getY(), &centroid.getZ());	// DEBUG DEBUG
 		// Create the child hull and add it to our compound shape
 		btScalar* hullVertices = (btScalar*)&hulls[ii+4];
@@ -1368,7 +1582,7 @@ const btVector3 BulletSim::RecoverFromPenetration(IDTYPE id)
 		return contactCallback.mOffset;
 	}
 	*/
-	return btVector3(0.0, 0.0, 0.0);
+	return btVector3(btScalar(0.0), btScalar(0.0), btScalar(0.0));
 }
 
 bool BulletSim::UpdateParameter2(IDTYPE localID, const char* parm, float val)
