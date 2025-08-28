@@ -24,47 +24,46 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-
-// Prevent Bullet2 headers from being included
-#define BT_NO_PROFILE 1
-#define NO_BULLET2 1
-#define __BT_INCLUDE_BULLET2_H__ 1
-
-// Use Bullet3 GPU headers only
-#define BT_USE_GPU 1
-#define USE_BULLET3 1
-
+// Include Bullet2 headers first
+#include <btBulletCollisionCommon.h>
+#include <btBulletDynamicsCommon.h>
 #define CL_TARGET_OPENCL_VERSION 120
+// Undef conflicting macros
+#ifdef MAX_NUM_PARTS_IN_BITS
+#undef MAX_NUM_PARTS_IN_BITS
+#endif
 
-// Include Bullet3 headers
-#include "Bullet3Common/b3Vector3.h"
-#include "Bullet3Common/b3Quaternion.h"
-#include "Bullet3Common/b3Transform.h"
-
-// Bullet3 GPU headers
+// Then include Bullet3 headers
 #include "Bullet3OpenCL/Initialize/b3OpenCLUtils.h"
-#include "Bullet3OpenCL/RigidBody/b3GpuRigidBodyPipeline.h"
-#include "Bullet3Common/b3Vector3.h"
-#include "Bullet3Common/b3Quaternion.h"
-#include "Bullet3Common/b3Transform.h"
-#include "Bullet3OpenCL/BroadphaseCollision/b3GpuSapBroadphase.h"
+#include "Bullet3OpenCL/BroadphaseCollision/b3GpuBroadphaseInterface.h"
 #include "Bullet3OpenCL/RigidBody/b3GpuNarrowPhase.h"
-#include "Bullet3Collision/BroadPhaseCollision/b3DynamicBvhBroadphase.h"
+#include "Bullet3OpenCL/RigidBody/b3GpuRigidBodyPipeline.h"
 
+// Then include your headers
+#include "WorldData.h"
+#include "VectorConverters.h"
 #include "BulletSim.h"
 #include "Util.h"
 
-#include <CL/cl.h>
+#include "Bullet3Common/b3Vector3.h"
+#include "Bullet3Collision/NarrowPhaseCollision/b3RaycastInfo.h"
+
+// Linkages to debugging dump routines
+extern "C" void DumpPhysicsStatistics2(BulletSim* sim);
+extern "C" void DumpActivationInfo2(BulletSim* sim);
 
 BulletSim::BulletSim(float maxX, float maxY, float maxZ)
 {
     // Initialize all members manually
-    m_gpuPipeline = nullptr;
-    m_gpuBroadphase = nullptr;
-    m_gpuNarrowphase = nullptr;
-    m_openclContext = nullptr;
-    m_openclQueue = nullptr;
-    m_openclDevice = nullptr;
+    // Initialize the GPU engine
+    m_gpuEngine = new GpuPhysicsEngine();
+    m_gpuEngine->gpuPipeline = nullptr;
+    m_gpuEngine->gpuBroadphase = nullptr;
+    m_gpuEngine->gpuNarrowphase = nullptr;
+    m_gpuEngine->openclContext = nullptr;
+    m_gpuEngine->openclQueue = nullptr;
+    m_gpuEngine->openclDevice = nullptr;
+	
     m_dumpStatsCount = 0;
     m_maxUpdatesPerFrame = 0;
     m_updatesThisFrameArray = nullptr;
@@ -93,208 +92,257 @@ BulletSim::BulletSim(float maxX, float maxY, float maxZ)
             // Get device ID
             cl_device_id device;
             ciErrNum = clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, NULL);
-            m_openclDevice = device;
+            m_gpuEngine->openclDevice = device;
             
             if (ciErrNum == CL_SUCCESS) {
                 // Create context and command queue
                 cl_context context = clCreateContext(NULL, 1, &device, NULL, NULL, &ciErrNum);
-                m_openclContext = context;
+                m_gpuEngine->openclContext = context;
                 
                 cl_command_queue queue = clCreateCommandQueue(context, device, 0, &ciErrNum);
-                m_openclQueue = queue;
+                m_gpuEngine->openclQueue = queue;
             }
         }
     }
 }
 
-BulletSim::~BulletSim()
+
+// Step the simulation forward by one full step and potentially some number of substeps
+// In BulletSim.cpp
+int BulletSim::PhysicsStep2(btScalar timeStep, int maxSubSteps, btScalar fixedTimeStep, 
+                           int* updatedEntityCount, int* collidersCount)
 {
-    exitPhysics2();
+    int numSimSteps = 0;
+
+    if (m_worldData.dynamicsWorld)
+    {
+        // Clear collision data
+        m_collidersThisFrame.clear();
+        collisionsThisFrame = 0;
+
+        int actualMaxSubSteps = (maxSubSteps > 0) ? maxSubSteps : m_maxSubSteps;
+        
+        if (m_gpuAvailable && m_gpuEngine->gpuPipeline) {
+            // Call stepSimulation on the GPU pipeline
+            m_gpuEngine->gpuPipeline->stepSimulation(timeStep);
+            
+            // Handle substeps
+            btScalar remainingTime = timeStep;
+            int stepsTaken = 0;
+            
+            while (remainingTime > 0.0f && stepsTaken < actualMaxSubSteps) {
+                btScalar dt = (remainingTime > fixedTimeStep) ? fixedTimeStep : remainingTime;
+                m_gpuEngine->gpuPipeline->integrate(dt);
+                remainingTime -= dt;
+                stepsTaken++;
+            }
+            
+            // Process CPU bodies
+            numSimSteps = m_worldData.dynamicsWorld->stepSimulation(timeStep, actualMaxSubSteps, fixedTimeStep);
+            
+            // Synchronize data
+            synchronizeGpuCpuData();
+        } else {
+            // CPU-only fallback
+            numSimSteps = m_worldData.dynamicsWorld->stepSimulation(timeStep, actualMaxSubSteps, fixedTimeStep);
+        }
+        
+        // Count rigid bodies for updatedEntityCount
+        if (updatedEntityCount)
+        {
+            int rigidBodyCount = 0;
+            for (int i = m_worldData.dynamicsWorld->getNumCollisionObjects() - 1; i >= 0; i--)
+            {
+                btCollisionObject* obj = m_worldData.dynamicsWorld->getCollisionObjectArray()[i];
+                if (obj->getInternalType() & btCollisionObject::CO_RIGID_BODY)
+                    rigidBodyCount++;
+            }
+            *updatedEntityCount = rigidBodyCount;
+        }
+        
+        if (collidersCount)
+            *collidersCount = collisionsThisFrame;
+    }
+    
+    return numSimSteps;
 }
 
+void BulletSim::synchronizeGpuCpuData()
+{
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return;
+    
+    // Copy transforms from GPU to CPU
+    for (uint32_t bodyId : m_gpuBodyIds) {
+        if (btCollisionObject* obj = findBodyById(bodyId)) {
+            btTransform trans;
+            obj->setWorldTransform(trans);
+        }
+    }
+    
+    // Copy transforms from CPU to GPU
+    for (uint32_t bodyId : m_cpuBodyIds) {
+        if (btCollisionObject* obj = findBodyById(bodyId)) {
+            if (obj->isActive()) {
+                btTransform trans = obj->getWorldTransform();
+            }
+        }
+    }
+}
+
+// In BulletSim.cpp, replace the gravity setting code:
 void BulletSim::initPhysics2(ParamBlock* parms, 
                             int maxCollisions, CollisionDesc* collisionArray, 
                             int maxUpdates, EntityProperties* updateArray)
 {
-    // m_worldData.BSLog("InitPhysics: GPU-only mode");  // Commented out due to initialization issues
-
     // Remember the pointers to pinned memory for returning collisions and property updates
     maxCollisionsPerFrame = maxCollisions;
     m_collidersThisFrameArray = collisionArray;
     m_maxUpdatesPerFrame = maxUpdates;
     m_updatesThisFrameArray = updateArray;
-    // m_worldData.params = parms;  // Commented out due to initialization issues
+    m_worldData.params = parms;
+
+    // Initialize the dynamics world even if GPU is not available
+    m_worldData.collisionConfiguration = new btDefaultCollisionConfiguration();
+    m_worldData.dispatcher = new btCollisionDispatcher(m_worldData.collisionConfiguration);
+    m_worldData.broadphase = new btDbvtBroadphase();
+    m_worldData.solver = new btSequentialImpulseConstraintSolver();
+    m_worldData.dynamicsWorld = new btDiscreteDynamicsWorld(
+        m_worldData.dispatcher, 
+        m_worldData.broadphase, 
+        m_worldData.solver, 
+        m_worldData.collisionConfiguration
+    );
+
+    // FIX: Use the correct gravity field from ParamBlock
+    // The ParamBlock has a single 'gravity' field, not separate X/Y/Z components
+    if (parms) {
+        // Use the gravity value from parameters (assuming it's the Y component magnitude)
+        // Default gravity is typically -9.8 m/s² on Y axis
+        m_worldData.dynamicsWorld->setGravity(btVector3(0, -parms->gravity, 0));
+    } else {
+        // Default gravity if no parameters provided
+        m_worldData.dynamicsWorld->setGravity(btVector3(0, -9.8f, 0));
+    }
 
     if (m_gpuAvailable) {
-        /*
-        // Configure GPU settings - commented out due to m_config issues
-        m_config.m_maxConvexBodies = gpuSettings.MaxConvexBodies;
-        m_config.m_maxConvexShapes = gpuSettings.MaxConvexShapes;
-        m_config.m_maxBroadphasePairs = gpuSettings.MaxBroadphasePairs;
-        m_config.m_maxContactCapacity = gpuSettings.MaxContactCapacity;
-        m_config.m_compoundPairCapacity = gpuSettings.CompoundPairCapacity;
-        m_config.m_maxVerticesPerFace = gpuSettings.MaxVerticesPerFace;
-        m_config.m_maxFacesPerShape = gpuSettings.MaxFacesPerShape;
-        m_config.m_maxConvexVertices = gpuSettings.MaxConvexVertices;
-        m_config.m_maxConvexIndices = gpuSettings.MaxConvexIndices;
-        m_config.m_maxConvexUniqueEdges = gpuSettings.MaxConvexUniqueEdges;
-        m_config.m_maxCompoundChildShapes = gpuSettings.MaxCompoundChildShapes;
-        m_config.m_maxTriConvexPairCapacity = gpuSettings.MaxTriConvexPairCapacity;
-        
-        // Create GPU components - commented out due to constructor issues
-        m_gpuNarrowphase = new b3GpuNarrowPhase(m_openclContext, m_openclDevice, m_openclQueue, m_config);
-        m_gpuBroadphase = new b3GpuSapBroadphase(m_openclContext, m_openclDevice, m_openclQueue);
-        m_broadphaseDbvt = new b3DynamicBvhBroadphase(16384);
-        
-        // Create GPU pipeline
-        m_gpuPipeline = new b3GpuRigidBodyPipeline(
-            m_openclContext, 
-            m_openclDevice, 
-            m_openclQueue,
-            m_gpuNarrowphase,
-            m_gpuBroadphase,
-            m_broadphaseDbvt,
-            m_config
-        );
-        */
-        
-        // m_worldData.BSLog("GPU acceleration enabled with OpenCL");  // Commented out due to initialization issues
+        // GPU initialization code would go here
+        // m_worldData.BSLog("GPU acceleration enabled with OpenCL");
     } else {
-        // m_worldData.BSLog("GPU acceleration not available");  // Commented out due to initialization issues
+        // m_worldData.BSLog("GPU acceleration not available");
     }
 }
 
 void BulletSim::exitPhysics2()
 {
     // Clean up GPU resources
-    if (m_gpuPipeline) {
-        delete m_gpuPipeline;
-        m_gpuPipeline = nullptr;
+    if (m_gpuEngine->gpuPipeline) {
+        delete m_gpuEngine->gpuPipeline;
+        m_gpuEngine->gpuPipeline = nullptr;
     }
     
-    if (m_gpuNarrowphase) {
-        delete m_gpuNarrowphase;
-        m_gpuNarrowphase = nullptr;
+    // Clean up CPU resources
+    if (m_worldData.dynamicsWorld) {
+        delete m_worldData.dynamicsWorld;
+        m_worldData.dynamicsWorld = nullptr;
     }
     
-    if (m_gpuBroadphase) {
-        delete m_gpuBroadphase;
-        m_gpuBroadphase = nullptr;
+    if (m_worldData.solver) {
+        delete m_worldData.solver;
+        m_worldData.solver = nullptr;
     }
     
-    // if (m_broadphaseDbvt) {  // Commented out due to declaration issues
-    //     delete m_broadphaseDbvt;
-    //     m_broadphaseDbvt = nullptr;
-    // }
+    if (m_worldData.broadphase) {
+        delete m_worldData.broadphase;
+        m_worldData.broadphase = nullptr;
+    }
+    
+    if (m_worldData.dispatcher) {
+        delete m_worldData.dispatcher;
+        m_worldData.dispatcher = nullptr;
+    }
+    
+    if (m_worldData.collisionConfiguration) {
+        delete m_worldData.collisionConfiguration;
+        m_worldData.collisionConfiguration = nullptr;
+    }
     
     // Clean up OpenCL resources
-    if (m_openclQueue) {
-        clReleaseCommandQueue(m_openclQueue);
-        m_openclQueue = nullptr;
+    if (m_gpuEngine->openclQueue) {
+        clReleaseCommandQueue(m_gpuEngine->openclQueue);
+        m_gpuEngine->openclQueue = nullptr;
     }
     
-    if (m_openclContext) {
-        clReleaseContext(m_openclContext);
-        m_openclContext = nullptr;
+    if (m_gpuEngine->openclContext) {
+        clReleaseContext(m_gpuEngine->openclContext);
+        m_gpuEngine->openclContext = nullptr;
     }
 }
 
-int BulletSim::PhysicsStep2(float timeStep, int maxSubSteps, float fixedTimeStep, 
-                           int* updatedEntityCount, int* collidersCount)
+// Placeholder implementations for GPU methods
+void b3GpuRigidBodyPipeline::stepSimulation(float timeStep)
 {
-    int numSimSteps = 0;
+    // Placeholder - implement actual GPU simulation step
+}
 
-    // Clear collision data
-    // m_collidersThisFrame.clear();  // Commented out due to declaration issues
-    collisionsThisFrame = 0;
+void b3GpuRigidBodyPipeline::integrate(float timeStep)
+{
+    // Placeholder - implement actual GPU integration
+}
 
-    int actualMaxSubSteps = (maxSubSteps > 0) ? maxSubSteps : m_maxSubSteps;
-    
-    if (m_gpuAvailable) {
-        // Process GPU simulation
-        // m_gpuPipeline->stepSimulation(timeStep);
-        
-        // Handle substeps
-        float remainingTime = timeStep;
-        int stepsTaken = 0;
-        
-        while (remainingTime > 0.0f && stepsTaken < actualMaxSubSteps) {
-            float dt = (remainingTime > fixedTimeStep) ? fixedTimeStep : remainingTime;
-            // m_gpuPipeline->integrate(dt);
-            remainingTime -= dt;
-            stepsTaken++;
+btCollisionObject* BulletSim::findBodyById(uint32_t id)
+{
+    for (int i = 0; i < m_worldData.dynamicsWorld->getNumCollisionObjects(); i++) {
+        btCollisionObject* obj = m_worldData.dynamicsWorld->getCollisionObjectArray()[i];
+        if (CONVLOCALID(obj->getUserPointer()) == id) {
+            return obj;
         }
-        numSimSteps = stepsTaken;
     }
-
-    // Process updates and collisions - commented out due to initialization issues
-    /*
-    int updates = 0;
-    if (m_worldData.updatesThisFrame.size() > 0) {
-        WorldData::UpdatesThisFrameMapType::const_iterator it = m_worldData.updatesThisFrame.begin(); 
-        for (; it != m_worldData.updatesThisFrame.end(); it++) {
-            if (updates < m_maxUpdatesPerFrame) {
-                m_updatesThisFrameArray[updates] = *(it->second);
-                updates++;
-            } else {
-                m_worldData.BSLog("WARNING: Exceeded max updates per frame (%d)", m_maxUpdatesPerFrame);
-                break;
-            }
-        }
-        m_worldData.updatesThisFrame.clear();
-    }
-
-    *updatedEntityCount = updates;
-    */
-    *updatedEntityCount = 0;
-    *collidersCount = collisionsThisFrame;
-
-    return numSimSteps;
+    return nullptr;
 }
 
 // GPU shape creation implementations - all commented out due to dependency issues
 int BulletSim::registerGpuBoxShape(const b3Vector3& halfExtents) {
-    if (!m_gpuAvailable || !m_gpuPipeline) return -1;
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return -1;
     return -1;
 }
 
 int BulletSim::registerGpuSphereShape(float radius) {
-    if (!m_gpuAvailable || !m_gpuPipeline) return -1;
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return -1;
     return -1;
 }
 
 int BulletSim::registerGpuCapsuleShape(float radius, float height) {
-    if (!m_gpuAvailable || !m_gpuPipeline) return -1;
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return -1;
     return -1;
 }
 
 int BulletSim::registerGpuCylinderShape(const b3Vector3& halfExtents) {
-    if (!m_gpuAvailable || !m_gpuPipeline) return -1;
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return -1;
     return -1;
 }
 
 int BulletSim::registerGpuConvexHullShape(int numPoints, float* points) {
-    if (!m_gpuAvailable || !m_gpuPipeline) return -1;
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return -1;
     return -1;
 }
 
 int BulletSim::registerGpuCompoundShape() {
-    if (!m_gpuAvailable || !m_gpuPipeline) return -1;
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return -1;
     return -1;
 }
 
 void BulletSim::addChildShapeToGpuCompound(int compoundShapeId, int childShapeId, const b3Transform& transform) {
-    if (!m_gpuAvailable || !m_gpuPipeline) return;
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return;
 }
 
 int BulletSim::registerGpuMeshShape(int indicesCount, int* indices, int verticesCount, float* vertices) {
-    if (!m_gpuAvailable || !m_gpuPipeline) return -1;
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return -1;
     return -1;
 }
 
 int BulletSim::registerGpuTerrainShape(int width, int length, float* heightData, 
                                      float minHeight, float maxHeight, float scale) {
-    if (!m_gpuAvailable || !m_gpuPipeline) return -1;
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return -1;
     return -1;
 }
 
@@ -302,91 +350,91 @@ int BulletSim::registerGpuTerrainShape(int width, int length, float* heightData,
 int BulletSim::registerGpuRigidBody(int shapeId, float mass, const b3Vector3& position, 
                                    const b3Quaternion& rotation, const b3Vector3& linearVelocity, 
                                    const b3Vector3& angularVelocity) {
-    if (!m_gpuAvailable || !m_gpuPipeline) return -1;
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return -1;
     return -1;
 }
 
 void BulletSim::setGpuBodyPosition(int bodyId, const b3Vector3& position) {
-    if (!m_gpuAvailable || !m_gpuPipeline) return;
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return;
 }
 
 void BulletSim::setGpuBodyRotation(int bodyId, const b3Quaternion& rotation) {
-    if (!m_gpuAvailable || !m_gpuPipeline) return;
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return;
 }
 
 void BulletSim::setGpuBodyLinearVelocity(int bodyId, const b3Vector3& velocity) {
-    if (!m_gpuAvailable || !m_gpuPipeline) return;
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return;
 }
 
 void BulletSim::setGpuBodyAngularVelocity(int bodyId, const b3Vector3& velocity) {
-    if (!m_gpuAvailable || !m_gpuPipeline) return;
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return;
 }
 
 void BulletSim::applyGpuBodyCentralForce(int bodyId, const b3Vector3& force) {
-    if (!m_gpuAvailable || !m_gpuPipeline) return;
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return;
 }
 
 void BulletSim::applyGpuBodyCentralImpulse(int bodyId, const b3Vector3& impulse) {
-    if (!m_gpuAvailable || !m_gpuPipeline) return;
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return;
 }
 
 void BulletSim::applyGpuBodyTorque(int bodyId, const b3Vector3& torque) {
-    if (!m_gpuAvailable || !m_gpuPipeline) return;
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return;
 }
 
 // GPU queries
 bool BulletSim::gpuRayTest(const b3Vector3& from, const b3Vector3& to, RayResult* result) {
-    if (!m_gpuAvailable || !m_gpuPipeline) return false;
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return false;
     return false;
 }
 
 bool BulletSim::gpuConvexSweepTest(int shapeId, const b3Vector3& fromPos, const b3Quaternion& fromRot,
                                  const b3Vector3& toPos, const b3Quaternion& toRot, SweepResult* result) {
-    if (!m_gpuAvailable || !m_gpuPipeline) return false;
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return false;
     return false;
 }
 
 int BulletSim::gpuGetContactPoints(int bodyIdA, int bodyIdB, ContactPoint* contacts, int maxContacts) {
-    if (!m_gpuAvailable || !m_gpuPipeline) return 0;
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return 0;
     return 0;
 }
 
 bool BulletSim::gpuGetAabb(int bodyId, b3Vector3& aabbMin, b3Vector3& aabbMax) {
-    if (!m_gpuAvailable || !m_gpuPipeline) return false;
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return false;
     return false;
 }
 
 // GPU info and debug
 int BulletSim::gpuGetNumRigidBodies() {
-    if (!m_gpuAvailable || !m_gpuPipeline) return 0;
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return 0;
     return 0;
 }
 
 int BulletSim::gpuGetNumCollisionObjects() {
-    if (!m_gpuAvailable || !m_gpuPipeline) return 0;
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return 0;
     return 0;
 }
 
 void BulletSim::gpuDumpWorldState() {
-    if (!m_gpuAvailable || !m_gpuPipeline) return;
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return;
 }
 
 // GPU constraints
 int BulletSim::createGpuPoint2PointConstraint(int bodyIdA, int bodyIdB, 
                                             const b3Vector3& pivotInA, const b3Vector3& pivotInB) {
-    if (!m_gpuAvailable || !m_gpuPipeline) return -1;
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return -1;
     return -1;
 }
 
 void BulletSim::removeGpuConstraint(int constraintId) {
-    if (!m_gpuAvailable || !m_gpuPipeline) return;
+    if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return;
 }
 
 bool BulletSim::UpdateParameter2(IDTYPE localID, const char* parm, float val) {
     if (strcmp(parm, "gravity") == 0) {
-        if (m_gpuAvailable && m_gpuPipeline) {
+        if (m_gpuAvailable && m_gpuEngine->gpuPipeline) {
             // b3Vector3 gravity(0, -val, 0);  // Commented out due to constructor issues
-            // m_gpuPipeline->setGravity(gravity);
+            // m_gpuEngine->gpuPipeline->setGravity(gravity);
             return true;
         }
     } else if (strcmp(parm, "max_substeps") == 0) {
@@ -430,3 +478,45 @@ void WorldData::BSLog2(const char* msg, va_list argp) {
     }
 }
 */
+
+RaycastHit BulletSim::RayTest(btVector3& fromBT, btVector3& toBT, short filterGroup, short filterMask)
+{
+    RaycastHit hit{};
+    hit.Fraction = 1.0f;
+
+    if (m_gpuAvailable && m_gpuEngine->gpuPipeline)
+    {
+        // Convert bt → b3 for GPU
+        b3Vector3 from = btToB3Vector3(fromBT);
+        b3Vector3 to   = btToB3Vector3(toBT);
+        
+        // Use GPU ray test
+        RayResult result;
+        if (gpuRayTest(from, to, &result))
+        {
+            hit.ID       = result.collisionObjectId;
+            hit.Fraction = result.hitFraction;
+            hit.Point    = result.hitPointWorld;   // b3Vector3 → Vector3 (ok)
+            hit.Normal   = result.hitNormalWorld;  // b3Vector3 → Vector3 (ok)
+        }
+    }
+    else
+    {
+        // CPU ray test (Bullet2)
+        btCollisionWorld::ClosestRayResultCallback rayCallback(fromBT, toBT);
+        rayCallback.m_collisionFilterGroup = filterGroup;
+        rayCallback.m_collisionFilterMask  = filterMask;
+
+        m_worldData.dynamicsWorld->rayTest(fromBT, toBT, rayCallback);
+
+        if (rayCallback.hasHit())
+        {
+            hit.ID       = CONVLOCALID(rayCallback.m_collisionObject->getUserPointer());
+            hit.Fraction = rayCallback.m_closestHitFraction;
+            hit.Point    = btToB3Vector3(rayCallback.m_hitPointWorld); // converted
+            hit.Normal   = btToB3Vector3(rayCallback.m_hitNormalWorld); // converted
+        }
+    }
+
+    return hit;
+}

@@ -41,6 +41,12 @@
 #include "Bullet3Common/b3Transform.h"
 #include "Bullet3Collision/NarrowPhaseCollision/shared/b3Collidable.h"
 
+#include <BulletCollision/CollisionShapes/btCollisionShape.h>
+#include <BulletCollision/CollisionDispatch/btCollisionObject.h>
+#include "BulletDynamics/Dynamics/btRigidBody.h"
+
+#include "VectorConverters.h"
+
 #include <map>
 #include <cstdint>
 
@@ -101,10 +107,10 @@ struct VehicleWheelInfo {
  * Returns a pointer to a string that identifies the version of the BulletSim.dll
  * @return pointer to zero terminated static string of format BULLETENGINEVERSION,BULLETSIMVERSION ("3.25,1.3")
  */
-/*EXTERN_C DLL_EXPORT const char* GetVersion2()
+EXTERN_C DLL_EXPORT const char* GetVersion2()
 {
 	return BulletSimVersionString.c_str();
-}*/
+}
 
 // DEBUG DEBUG DEBUG =========================================================================================
 // USE ONLY FOR VITAL DEBUGGING!!!!
@@ -183,19 +189,20 @@ EXTERN_C DLL_EXPORT void AddChildShapeToGpuCompound(BulletSim* sim, int compound
 /**
  * Initializes the physical simulation.
  */
-/*EXTERN_C DLL_EXPORT BulletSim* Initialize2(Vector3 maxPosition, ParamBlock* parms,
-											int maxCollisions, CollisionDesc* collisionArray,
-											int maxUpdates, EntityProperties* updateArray,
-											DebugLogCallback* debugLog)
+EXTERN_C DLL_EXPORT BulletSim* Initialize2(Vector3 maxPosition, ParamBlock* parms,
+                                          int maxCollisions, CollisionDesc* collisionArray,
+                                          int maxUpdates, EntityProperties* updateArray,
+                                          DebugLogCallback* debugLog)
 {
-	bsDebug_Initialize();
+    bsDebug_Initialize();
 
-	//BulletSim* sim = new BulletSim(maxPosition.X, maxPosition.Y, maxPosition.Z);
-	//sim->getWorldData()->debugLogCallback = debugLog;
-	//sim->initPhysics2(parms, maxCollisions, collisionArray, maxUpdates, updateArray);
+    // Create and initialize the BulletSim instance
+    BulletSim* sim = new BulletSim(maxPosition.X, maxPosition.Y, maxPosition.Z);
+    sim->getWorldData()->debugLogCallback = debugLog;
+    sim->initPhysics2(parms, maxCollisions, collisionArray, maxUpdates, updateArray);
 
-	//return sim;
-}*/
+    return sim;
+}
 
 /**
  * Update the internal value of a parameter.
@@ -229,12 +236,21 @@ EXTERN_C DLL_EXPORT void ResetConstraintSolver(BulletSim* sim)
 
 /**
  * Steps the simulation forward a given amount of time and retrieves any physics updates.
+ * @param worldID ID of the world to step.
+ * @param timeStep Length of time in seconds to move the simulation forward.
+ * @param maxSubSteps Clamps the maximum number of fixed duration sub steps taken this step.
+ * @param fixedTimeStep Length in seconds of the sub steps Bullet actually uses for simulation. Example: 1.0 / TARGET_FPS.
+ * @param updatedEntityCount Pointer to the number of EntityProperties generated this call.
+ * @param updatedEntities Pointer to an array of pointers to EntityProperties containing physics updates generated this call.
+ * @param collidersCount Pointer to the number of colliders detected this call.
+ * @param colliders Pointer to an array of colliding object IDs (in pairs of two).
+ * @return Number of sub steps that were taken this call.
  */
-/*EXTERN_C DLL_EXPORT int PhysicsStep2(BulletSim* sim, float timeStep, int maxSubSteps, float fixedTimeStep, 
+EXTERN_C DLL_EXPORT int PhysicsStep2(BulletSim* sim, float timeStep, int maxSubSteps, float fixedTimeStep, 
 										int* updatedEntityCount, int* collidersCount)
 {
 	return sim->PhysicsStep2(timeStep, maxSubSteps, fixedTimeStep, updatedEntityCount, collidersCount);
-}*/
+}
 
 // GPU-compatible mesh creation
 EXTERN_C DLL_EXPORT int CreateGpuMeshShape(BulletSim* sim, int indicesCount, int* indices, int verticesCount, float* vertices)
@@ -437,4 +453,325 @@ EXTERN_C DLL_EXPORT int CreateGpuPoint2PointConstraint(BulletSim* sim, int bodyI
 EXTERN_C DLL_EXPORT void RemoveGpuConstraint(BulletSim* sim, int constraintId)
 {
     sim->removeGpuConstraint(constraintId);
+}
+
+EXTERN_C DLL_EXPORT btCollisionShape* CreateGroundPlaneShape2(
+	IDTYPE id,
+	float height,	// usually 1
+	float collisionMargin)
+{
+	// Initialize the ground plane
+	/*btVector3 groundPlaneNormal = btVector3(0, 0, 1);	// Z up
+	btStaticPlaneShape* m_planeShape = new btStaticPlaneShape(groundPlaneNormal, (btScalar)height);
+	m_planeShape->setMargin(collisionMargin);
+
+	m_planeShape->setUserPointer(PACKLOCALID(id));
+	bsDebug_RememberCollisionShape(m_planeShape);
+
+	return m_planeShape;*/
+	
+	return nullptr;
+}
+
+// Create a btRigidBody with the default MotionState. We will not get any movement updates from this body.
+EXTERN_C DLL_EXPORT btCollisionObject* CreateBodyWithDefaultMotionState2(btCollisionShape* shape, 
+						IDTYPE id, Vector3 pos, Quaternion rot)
+{
+	/*bsDebug_AssertIsKnownCollisionShape(shape, "CreateBodyWithDefaultMotionState2: unknown collision shape");
+	btTransform heightfieldTr(rot.GetBtQuaternion(), pos.GetBtVector3());
+
+	// Use the default motion state since we are not interested in these
+	//   objects reporting collisions. Other objects will report their
+	//   collisions with the terrain.
+	btDefaultMotionState* motionState = new btDefaultMotionState(heightfieldTr);
+	btRigidBody::btRigidBodyConstructionInfo cInfo(0.0, motionState, shape);
+	btRigidBody* body = new btRigidBody(cInfo);
+
+	body->setUserPointer(PACKLOCALID(id));
+	bsDebug_RememberCollisionObject(body);
+
+	return body;*/
+	
+	return nullptr;
+}
+
+EXTERN_C DLL_EXPORT Vector3 GetGravity2(btCollisionObject* obj)
+{
+	Vector3 ret = Vector3();
+	/*btRigidBody* rb = btRigidBody::upcast(obj);
+	if (rb) ret = rb->getGravity();
+	return ret;*/
+	
+	return ret;
+}
+
+EXTERN_C DLL_EXPORT bool AddObjectToWorld2(BulletSim* sim, btCollisionObject* obj)
+{
+	/*bsDebug_AssertIsKnownCollisionObject(obj, "AddObjectToWorld2: unknown collisionObject");
+	bsDebug_AssertCollisionObjectIsNotInWorld(sim, obj, "AddObjectToWorld2: collisionObject already in world");
+	btRigidBody* rb = btRigidBody::upcast(obj);
+	if (rb)
+		sim->getDynamicsWorld()->addRigidBody(rb);
+	else
+		sim->getDynamicsWorld()->addCollisionObject(obj);*/
+	return true;
+}
+
+EXTERN_C DLL_EXPORT void SetGravity2(btCollisionObject* obj, Vector3 grav)
+{
+	/*btRigidBody* rb = btRigidBody::upcast(obj);
+	if (rb) rb->setGravity(grav.GetBtVector3());*/
+}
+
+EXTERN_C DLL_EXPORT bool SetCollisionGroupMask2(btCollisionObject* obj, unsigned int group, unsigned int mask)
+{
+	/*bool ret = false;
+	btBroadphaseProxy* proxy = obj->getBroadphaseHandle();
+	// If the object is not in the world, there won't be a proxy.
+	if (proxy)
+	{
+		// staticSim->getWorldData()->BSLog("SetCollisionGroupMask. ogroup=%x, omask=%x, ngroup=%x, nmask=%x",
+		// 				(int)proxy->m_collisionFilterGroup, (int)proxy->m_collisionFilterMask, group, mask);
+		proxy->m_collisionFilterGroup = (short)group;
+		proxy->m_collisionFilterMask = (short)mask;
+		ret = true;
+	}
+	// else
+	// {
+	// 	staticSim->getWorldData()->BSLog("SetCollisionGroupMask did not find a proxy");
+	// }
+	return ret;*/
+	
+	return true;
+}
+
+EXTERN_C DLL_EXPORT void UpdateSingleAabb2(BulletSim* world, btCollisionObject* obj)
+{
+	/*bsDebug_AssertIsKnownCollisionObject(obj, "updateSingleAabb2: unknown collisionObject");
+	world->getDynamicsWorld()->updateSingleAabb(obj);*/
+}
+
+EXTERN_C DLL_EXPORT void ForceActivationState2(btCollisionObject* obj, int newState)
+{
+	//obj->forceActivationState(newState);
+}
+
+EXTERN_C DLL_EXPORT btCollisionShape* CreateTerrainShape2(IDTYPE id, Vector3 size, float minHeight, float maxHeight, float* heightMap, 
+								float scaleFactor, float collisionMargin)
+{
+	/*const int upAxis = 2;
+	btHeightfieldTerrainShape* terrainShape = new btHeightfieldTerrainShape(
+										(int)size.X, (int)size.Y, heightMap, (btScalar)scaleFactor, 
+										(btScalar)minHeight, (btScalar)maxHeight, upAxis, PHY_FLOAT, false);
+
+	terrainShape->setMargin(btScalar(collisionMargin));
+	terrainShape->setUseDiamondSubdivision(true);
+
+	// Add the localID to the object so we know about collisions
+	terrainShape->setUserPointer(PACKLOCALID(id));
+	bsDebug_RememberCollisionShape(terrainShape);
+
+	return terrainShape;*/
+	
+	return nullptr;
+}
+
+EXTERN_C DLL_EXPORT void SetFriction2(btCollisionObject* obj, float val)
+{
+	//obj->setFriction(btScalar(val));
+}
+
+EXTERN_C DLL_EXPORT void SetHitFraction2(btCollisionObject* obj, float val)
+{
+	//obj->setHitFraction(btScalar(val));
+}
+
+EXTERN_C DLL_EXPORT void SetRestitution2(btCollisionObject* obj, float val)
+{
+	//obj->setRestitution(btScalar(val));
+}
+
+EXTERN_C DLL_EXPORT uint32_t SetCollisionFlags2(btCollisionObject* obj, uint32_t flags)
+{
+	/*obj->setCollisionFlags(flags);
+	return obj->getCollisionFlags();*/
+	
+	return 0u;
+}
+
+// Dump info about the number of objects and their activation state
+EXTERN_C DLL_EXPORT void DumpActivationInfo2(BulletSim* sim)
+{
+	btDynamicsWorld* world = sim->getDynamicsWorld();
+	btCollisionObjectArray& collisionObjects = world->getCollisionObjectArray();
+	int numRigidBodies = 0;
+	int* activeStates = new int[10];
+	for (int ii=0; ii<10; ii++) activeStates[ii] = 0;
+
+	int numCollisionObjects = collisionObjects.size();
+	for (int ii=0; ii < numCollisionObjects; ii++)
+	{
+		btCollisionObject* obj = collisionObjects[ii];
+		int activeState = obj->getActivationState();
+		activeStates[activeState]++;
+
+		btRigidBody* rb = btRigidBody::upcast(obj);
+		if (rb)
+		{
+			numRigidBodies++;
+		}
+	}
+	sim->getWorldData()->BSLog("     num CollisionObject = %d", numCollisionObjects);
+	sim->getWorldData()->BSLog("         num RigidBodies = %d", numRigidBodies);
+	sim->getWorldData()->BSLog("          num ACTIVE_TAG = %d", activeStates[ACTIVE_TAG]);
+	sim->getWorldData()->BSLog("     num ISLAND_SLEEPING = %d", activeStates[ISLAND_SLEEPING]);
+	sim->getWorldData()->BSLog("  num WANTS_DEACTIVATION = %d", activeStates[WANTS_DEACTIVATION]);
+	sim->getWorldData()->BSLog("num DISABLE_DEACTIVATION = %d", activeStates[DISABLE_DEACTIVATION]);
+	sim->getWorldData()->BSLog("  num DISABLE_SIMULATION = %d", activeStates[DISABLE_SIMULATION]);
+	sim->getWorldData()->BSLog("    num overlappingPairs = %d", world->getPairCache()->getNumOverlappingPairs());
+
+	/* Code for displaying some of the info in the overlapping pairs cache
+	btBroadphasePairArray& pairArray = world->getPairCache()->getOverlappingPairArray();
+	int numPairs = pairArray.size();
+
+	for (int ii=0; ii < numPairs; ii += 10000)
+	{
+		sim->getWorldData()->BSLog("pairArray[%d], id0=%u, id1=%u", ii,
+					((btCollisionObject*)pairArray[ii].m_pProxy0->m_clientObject)->getUserPointer(),
+					((btCollisionObject*)pairArray[ii].m_pProxy1->m_clientObject)->getUserPointer());
+	}
+	*/
+
+}
+
+/**
+ * Perform a raycast test by drawing a line from a and testing for collisions.
+ * @param worldID ID of the world to access.
+ * @param id Object ID to ignore during the raycast.
+ * @param from Start of the ray.
+ * @param to End of the ray.
+ * @return Raycast results. If there were no collisions, RaycastHit.ID will be ID_INVALID_HIT (0xFFFFFFFF)
+ */
+EXTERN_C DLL_EXPORT RaycastHit RayTest2(BulletSim* world, Vector3 from, Vector3 to, unsigned int filterGroup, unsigned int filterMask)
+{
+	b3Vector3 f_b3 = from.GetBtVector3();
+	b3Vector3 t_b3 = to.GetBtVector3();
+	btVector3 f_bt = b3ToBtVector3(f_b3);
+	btVector3 t_bt = b3ToBtVector3(t_b3);
+	return world->RayTest(f_bt, t_bt, (short)filterGroup, (short)filterMask);
+}
+
+EXTERN_C DLL_EXPORT btCollisionShape* CreateInnerShape(btCollisionShape* outerShape, float scaleFactor)
+{
+    btVector3 scaling = outerShape->getLocalScaling();
+    scaling *= scaleFactor;
+    
+    switch (outerShape->getShapeType())
+    {
+        case BOX_SHAPE_PROXYTYPE: {
+            btBoxShape* box = (btBoxShape*)outerShape;
+            btVector3 halfExtents = box->getHalfExtentsWithMargin() * scaleFactor;
+            return new btBoxShape(halfExtents);
+        }
+        case CYLINDER_SHAPE_PROXYTYPE: {
+            btCylinderShape* cyl = (btCylinderShape*)outerShape;
+            btVector3 halfExtents = cyl->getHalfExtentsWithMargin() * scaleFactor;
+            return new btCylinderShape(halfExtents);
+        }
+        case CONE_SHAPE_PROXYTYPE: {
+            btConeShape* cone = (btConeShape*)outerShape;
+            return new btConeShape(cone->getRadius() * scaleFactor, 
+                                 cone->getHeight() * scaleFactor);
+        }
+        case SPHERE_SHAPE_PROXYTYPE: {
+            btSphereShape* sphere = (btSphereShape*)outerShape;
+            return new btSphereShape(sphere->getRadius() * scaleFactor);
+        }
+        case CAPSULE_SHAPE_PROXYTYPE: {
+            btCapsuleShape* capsule = (btCapsuleShape*)outerShape;
+            return new btCapsuleShape(capsule->getRadius() * scaleFactor,
+                                    capsule->getHalfHeight() * scaleFactor);
+        }
+        default:
+            return NULL;
+    }
+}
+
+EXTERN_C DLL_EXPORT btCollisionShape* BuildCapsuleShape2(BulletSim* sim, float radius, float height, Vector3 scale)
+{
+	btCollisionShape* shape = new btCapsuleShapeZ(btScalar(radius), btScalar(height));
+	if (shape)
+	{
+		shape->setMargin(sim->getWorldData()->params->collisionMargin);
+		shape->setLocalScaling(b3ToBtVector3(scale.GetBtVector3())); //convert GetBtVector3 (in name only as it is truly a b3Vector3)
+		bsDebug_RememberCollisionShape(shape);
+	}
+	return shape;
+}
+
+EXTERN_C DLL_EXPORT btCollisionShape* BuildNativeShape2(BulletSim* sim, ShapeData shapeData)
+{
+	btCollisionShape* shape = NULL;
+	switch ((int)shapeData.Type)
+	{
+		case ShapeData::SHAPE_BOX:
+			// btBoxShape subtracts the collision margin from the half extents, so no 
+			// fiddling with scale necessary
+			// boxes are defined by their half extents
+			shape = new btBoxShape(btVector3(0.5, 0.5, 0.5));	// this is really a unit box
+			break;
+		case ShapeData::SHAPE_CONE:	// TODO:
+			shape = new btConeShapeZ(0.5, 1.0);
+			break;
+		case ShapeData::SHAPE_CYLINDER:	// TODO:
+			shape = new btCylinderShapeZ(btVector3(0.5f, 0.5f, 0.5f));
+			break;
+		case ShapeData::SHAPE_SPHERE:
+			shape = new btSphereShape(0.5);		// this is really a unit sphere
+			break;
+	}
+	if (shape != NULL)
+	{
+		shape->setMargin(btScalar(sim->getWorldData()->params->collisionMargin));
+		shape->setLocalScaling(b3ToBtVector3(shapeData.Scale.GetBtVector3())); //bt in name only!!!
+		
+		        // Check for significant hollows or cuts
+        float minOpeningFraction = CalculateMinOpeningFraction(
+            std::max(shapeData.Scale.X, std::max(shapeData.Scale.Y, shapeData.Scale.Z))
+        );
+        
+        if (shapeData.Hollow > HOLLOW_THRESHOLD || 
+            (shapeData.ProfileEnd - shapeData.ProfileBegin) > CUT_THRESHOLD) {
+            
+            btCollisionShape* innerShape = CreateInnerShape(shape, INNER_SHAPE_SCALE);
+            if (innerShape) {
+                btCompoundShape* compound = new btCompoundShape();
+                btTransform transform;
+                transform.setIdentity();
+                
+                // Add outer shape
+                compound->addChildShape(transform, shape);
+                
+                // Add inner shape as non-colliding
+                innerShape->setUserPointer((void*)BS_SUBSCRIBE_COLLISION_EVENTS);
+                compound->addChildShape(transform, innerShape);
+                
+                shape = compound;
+            }
+        }
+		
+		bsDebug_RememberCollisionShape(shape);
+	}
+
+	return shape;
+}
+
+EXTERN_C DLL_EXPORT float GetAngularMotionDisc2(btCollisionShape* shape)
+{
+	return shape->getAngularMotionDisc();
+}
+
+EXTERN_C DLL_EXPORT float GetContactBreakingThreshold2(btCollisionShape* shape, float defaultFactor)
+{
+	return shape->getContactBreakingThreshold(btScalar(defaultFactor));
 }

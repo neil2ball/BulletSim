@@ -24,7 +24,7 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-
+// In WorldData.h, remove the problematic Bullet3 includes and replace with forward declarations
 #pragma once
 
 #ifndef WORLD_DATA_H
@@ -43,13 +43,31 @@
 #include "ArchStuff.h"
 #include "APIData.h"
 
-#include "Bullet3OpenCL/Initialize/b3OpenCLUtils.h"
-#include "Bullet3OpenCL/BroadphaseCollision/b3GpuBroadphaseInterface.h"
-#include "Bullet3OpenCL/RigidBody/b3GpuNarrowPhase.h"
-#include "Bullet3OpenCL/RigidBody/b3GpuRigidBodyPipeline.h"
+// Remove these problematic includes:
+// #include "Bullet3OpenCL/Initialize/b3OpenCLUtils.h"
+// #include "Bullet3OpenCL/BroadphaseCollision/b3GpuBroadphaseInterface.h"
+// #include "Bullet3OpenCL/RigidBody/b3GpuNarrowPhase.h"
+// #include "Bullet3OpenCL/RigidBody/b3GpuRigidBodyPipeline.h"
+
+// Add forward declarations for OpenCL types
+typedef struct _cl_context* cl_context;
+typedef struct _cl_command_queue* cl_command_queue;
+typedef struct _cl_device_id* cl_device_id;
+
+// Forward declarations for GPU components
+class b3GpuRigidBodyPipeline;
+class b3GpuBroadphaseInterface;
+class b3GpuNarrowPhase;
+
+// Keep the Bullet2 includes as they are
 #include "Bullet3Common/b3Vector3.h"
 #include "Bullet3Common/b3Quaternion.h"
 #include "Bullet3Common/b3Transform.h"
+
+#include "BulletDynamics/Dynamics/btDynamicsWorld.h"
+#include <btBulletCollisionCommon.h>
+#include <btBulletDynamicsCommon.h>
+
 
 // Forward declarations
 class BulletSim;
@@ -59,10 +77,6 @@ class IPhysObject;
 class TerrainObject;
 class GroundPlaneObject;
 
-// Forward declarations for GPU components
-class b3GpuRigidBodyPipeline;
-class b3GpuBroadphaseInterface;
-class b3GpuNarrowPhase;
 
 #include <stdarg.h>
 #include <map>
@@ -84,7 +98,7 @@ struct BULLETSIM_API WorldData
 	ParamBlock* params;
 	
 	// The main dynamics world
-	//btDynamicsWorld* dynamicsWorld;
+	btDynamicsWorld* dynamicsWorld;
 	
 	// The minimum and maximum points in the defined physical space
 	b3Vector3 MinPosition;
@@ -98,6 +112,12 @@ struct BULLETSIM_API WorldData
 	// This is used for ghost objects to be handed in the simulation step.
 	//typedef std::map<IDTYPE, btCollisionObject*> SpecialCollisionObjectMapType;
 	//SpecialCollisionObjectMapType specialCollisionObjects;
+
+    // Add Bullet physics components
+    btDefaultCollisionConfiguration* collisionConfiguration;
+    btCollisionDispatcher* dispatcher;
+    btBroadphaseInterface* broadphase;
+    btSequentialImpulseConstraintSolver* solver;
 
 	// GPU acceleration members
 	b3GpuRigidBodyPipeline* gpuPipeline;

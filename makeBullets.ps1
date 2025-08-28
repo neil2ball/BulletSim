@@ -115,7 +115,7 @@ if ($FETCHBULLETSOURCES -eq "yes") {
 		
 		Write-Host "Processing patch: $filename"
 		
-		if ($filename -eq "0002-force-opencl.patch" -or $filename -eq "0003-bullet3-opencl-fix.patch") {
+		if ($filename -eq "0003-bullet3-opencl-fix.patch") {
 			# DEBUG: Show the value of USEOPENCL
 			Write-Host "USEOPENCL value: '$USEOPENCL'"
 			
@@ -137,7 +137,7 @@ if ($FETCHBULLETSOURCES -eq "yes") {
 							$content = Get-Content $cmakeFile -Raw
 
 							# ADD THE OPENCL CONFIG RIGHT AFTER THE FIRST LINE
-							$newContent = $content -replace '(cmake_minimum_required\(VERSION 3\.5\))', "`$1`n`nset(OPENCL_FOUND TRUE)`nset(OPENCL_INCLUDE_DIR `"C:/OpenCL-SDK/include/CL`")`nset(OPENCL_LIBRARY `"C:/OpenCL-SDK/lib/OpenCL.lib`")`n"
+							$newContent = $content -replace '(cmake_minimum_required\(VERSION 3\.5\))', "`$1`n`nset(OPENCL_FOUND TRUE)`nset(OPENCL_INCLUDE_DIR `"C:/OpenCL-SDK/include/CL`")`nset(OPENCL_LIBRARY `"C:/OpenCL-SDK/lib/OpenCL.lib`")`nset(USE_DOUBLE_PRECISION OFF CACHE BOOL `"Use double precision`" FORCE)`nset(USE_OPENCL ON CACHE BOOL `"`" FORCE)`nset(BUILD_BULLET3 ON CACHE BOOL `"`" FORCE)`n"
 
 							Set-Content -Path $cmakeFile -Value $newContent -NoNewline
 							Write-Host "SUCCESS: Directly applied OpenCL config to CMakeLists.txt" -ForegroundColor Green

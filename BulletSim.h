@@ -29,12 +29,26 @@
 #ifndef BULLET_SIM_H
 #define BULLET_SIM_H
 
+// Include Bullet2 headers first
+#include <btBulletCollisionCommon.h>
+#include <btBulletDynamicsCommon.h>
+
+// Undef conflicting macros
+#ifdef MAX_NUM_PARTS_IN_BITS
+#undef MAX_NUM_PARTS_IN_BITS
+#endif
+
+// Then include your headers
+#include "WorldData.h"
+#include "VectorConverters.h"
+
+#define CL_TARGET_OPENCL_VERSION 120
 #include <CL/cl.h>
 
 #include "DebugLogic.h"
 #include "ArchStuff.h"
 #include "APIData.h"
-#include "WorldData.h"
+#include "GpuPhysicsEngine.h"
 
 #include "Bullet3OpenCL/RigidBody/b3GpuRigidBodyPipeline.h"
 #include "Bullet3Common/b3Vector3.h"
@@ -44,13 +58,16 @@
 #include "Bullet3OpenCL/BroadphaseCollision/b3GpuBroadphaseInterface.h"
 #include "Bullet3OpenCL/BroadphaseCollision/b3GpuSapBroadphase.h"
 #include "Bullet3OpenCL/RigidBody/b3GpuNarrowPhase.h"
-#include "Bullet3OpenCL/RigidBody/b3GpuRigidBodyPipeline.h"
-#include "Bullet3OpenCL/NarrowphaseCollision/b3QuantizedBvh.h"
+#include "Bullet3Collision/NarrowPhaseCollision/b3RaycastInfo.h"
+
+#include <LinearMath/btScalar.h>
 
 #include <set>
 #include <map>
 #include <vector>
 #include <cstdint>
+#include <string>
+
 
 class b3GpuRigidBodyPipeline;
 class b3GpuBroadphaseInterface;
@@ -128,7 +145,7 @@ struct ManifoldPoint {
 static const int    DEFAULT_MAX_SUBSTEPS = 12;
 static const float  DEFAULT_CONTACT_IMPULSE_THRESHOLD = 0.2f;
 
-//static std::string BulletSimVersionString = MACRO_AS_STRING(BULLETSIMVERSION) "," MACRO_AS_STRING(BULLETVERSION);
+static std::string BulletSimVersionString = MACRO_AS_STRING(BULLETSIMVERSION) "," MACRO_AS_STRING(BULLETVERSION);
 
 class BulletSim
 {
@@ -145,13 +162,6 @@ private:
     float m_contactImpulseThreshold;
     
     bool m_gpuAvailable = false;
-    
-    b3GpuRigidBodyPipeline* m_gpuPipeline = nullptr;
-    b3GpuBroadphaseInterface* m_gpuBroadphase = nullptr;
-    b3GpuNarrowPhase* m_gpuNarrowphase = nullptr;
-    cl_context m_openclContext = nullptr;
-    cl_command_queue m_openclQueue = nullptr;
-    cl_device_id m_openclDevice = nullptr;
 
     int m_dumpStatsCount;
 
@@ -249,7 +259,7 @@ public:
     int GetNumContactPoints2();
     
     bool isGpuAvailable() const { return m_gpuAvailable; }
-    b3GpuRigidBodyPipeline* getGpuPipeline() { return m_gpuPipeline; }
+    GpuPhysicsEngine* m_gpuEngine;
     void registerGpuBody(uint32_t id, uint32_t gpuId);
     void registerCpuBody(uint32_t id);
 
@@ -257,15 +267,22 @@ public:
     void SetContactImpulseThreshold(float threshold) { m_contactImpulseThreshold = threshold; }
     float getContactImpulseThreshold() const { return m_contactImpulseThreshold; }
     
+	// Keep existing method for collision objects
+    btCollisionObject* findBodyById(uint32_t id);
+	
     void synchronizeGpuCpuData();
     
-    virtual ~BulletSim();
+    virtual ~BulletSim()
+	{
+		exitPhysics2();
+	}
 
     void initPhysics2(ParamBlock* parms, int maxCollisions, CollisionDesc* collisionArray, int maxUpdates, EntityProperties* updateArray);
     void exitPhysics2();
 
     // Add PhysicsStep2 declaration
-    int PhysicsStep2(float timeStep, int maxSubSteps, float fixedTimeStep, int* updatedEntityCount, int* collidersCount);
+	int PhysicsStep2(btScalar timeStep, int maxSubSteps, btScalar fixedTimeStep, int* updatedEntityCount, int* collidersCount);
+
 
     // GPU shape creation methods
     int CreateGpuMeshShape(int indicesCount, int* indices, int verticesCount, float* vertices);
@@ -288,9 +305,12 @@ public:
     void RecordCollision(int objA, int objB, const b3Vector3& contact, const b3Vector3& norm, float penetration);
 
     WorldData* getWorldData() { return &m_worldData; }
+    btDynamicsWorld* getDynamicsWorld() { return m_worldData.dynamicsWorld; };
 
     bool UpdateParameter2(IDTYPE localID, const char* parm, float value);
     void DumpPhysicsStats();
+	
+	RaycastHit RayTest(btVector3& from, btVector3& to, short filterGroup, short filterMask);
 
 protected:
     void CreateGroundPlane();
