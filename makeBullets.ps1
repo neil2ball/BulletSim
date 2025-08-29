@@ -114,51 +114,23 @@ if ($FETCHBULLETSOURCES -eq "yes") {
 		$filePath = $file.FullName
 		
 		Write-Host "Processing patch: $filename"
-		
-		if ($filename -eq "0003-bullet3-opencl-fix.patch") {
-			# DEBUG: Show the value of USEOPENCL
-			Write-Host "USEOPENCL value: '$USEOPENCL'"
-			
-			if ($USEOPENCL -eq "yes") {
-				git apply --ignore-whitespace $filePath
-				if ($LASTEXITCODE -eq 0) {
-					Write-Host "Successfully applied OpenCL patch: $filename"
-				} else {
-					Write-Host "ERROR: Failed to apply OpenCL patch: $filename" -ForegroundColor Red
-					Write-Host "Trying to apply with --reverse first to clean any partial application..."
-					git apply --reverse --ignore-whitespace $filePath 2>$null
-					git apply --ignore-whitespace $filePath
-					if ($LASTEXITCODE -eq 0) {
-						Write-Host "Successfully applied OpenCL patch on second attempt: $filename"
-					}
-					else {
-							# APPLY THE OPENCL CONFIG DIRECTLY TO THE CMakeLists.txt
-							$cmakeFile = "CMakeLists.txt"
-							$content = Get-Content $cmakeFile -Raw
-
-							# ADD THE OPENCL CONFIG RIGHT AFTER THE FIRST LINE
-							$newContent = $content -replace '(cmake_minimum_required\(VERSION 3\.5\))', "`$1`n`nset(OPENCL_FOUND TRUE)`nset(OPENCL_INCLUDE_DIR `"C:/OpenCL-SDK/include/CL`")`nset(OPENCL_LIBRARY `"C:/OpenCL-SDK/lib/OpenCL.lib`")`nset(USE_DOUBLE_PRECISION OFF CACHE BOOL `"Use double precision`" FORCE)`nset(USE_OPENCL ON CACHE BOOL `"`" FORCE)`nset(BUILD_BULLET3 ON CACHE BOOL `"`" FORCE)`n"
-
-							Set-Content -Path $cmakeFile -Value $newContent -NoNewline
-							Write-Host "SUCCESS: Directly applied OpenCL config to CMakeLists.txt" -ForegroundColor Green
-
-						
-					}
-				}
-				
-			} else {
-				Write-Host "Skipping OpenCL patch: $filename (USEOPENCL is not 'yes')" -ForegroundColor Yellow
-			}
-		}
-		else {
-			git apply --ignore-whitespace $filePath
-			if ($LASTEXITCODE -eq 0) {
-				Write-Host "Applied patch: $filename"
-			} else {
-				Write-Host "Warning: Failed to apply patch: $filename" -ForegroundColor Yellow
-			}
+		git apply --ignore-whitespace $filePath
+		if ($LASTEXITCODE -eq 0) {
+			Write-Host "Applied patch: $filename"
+		} else {
+			Write-Host "Warning: Failed to apply patch: $filename" -ForegroundColor Yellow
 		}
 	}
+	
+	# APPLY THE OPENCL CONFIG DIRECTLY TO THE CMakeLists.txt
+	$cmakeFile = "CMakeLists.txt"
+	$content = Get-Content $cmakeFile -Raw
+
+	# ADD THE OPENCL CONFIG RIGHT AFTER THE FIRST LINE
+	$newContent = $content -replace '(cmake_minimum_required\(VERSION 3\.5\))', "`$1`n`nset(OPENCL_FOUND TRUE)`nset(OPENCL_INCLUDE_DIR `"C:/OpenCL-SDK/include/CL`")`nset(OPENCL_LIBRARY `"C:/OpenCL-SDK/lib/OpenCL.lib`")`nset(USE_DOUBLE_PRECISION OFF CACHE BOOL `"Use double precision`" FORCE)`nset(USE_OPENCL ON CACHE BOOL `"`" FORCE)`nset(BUILD_BULLET3 ON CACHE BOOL `"`" FORCE)`n"
+
+	Set-Content -Path $cmakeFile -Value $newContent -NoNewline
+	Write-Host "SUCCESS: Directly applied OpenCL config to CMakeLists.txt" -ForegroundColor Green
 }
 
 Set-Location $BASE
