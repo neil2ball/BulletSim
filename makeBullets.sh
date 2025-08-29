@@ -84,22 +84,10 @@ if [ "$FETCHBULLETSOURCES" = "yes" ]; then
         filename=$(basename "$file")
         echo "Processing patch: $filename"
 
-        if [ "$filename" = "0002-force-opencl.patch" ]; then
-            if [ "$USEOPENCL" = "yes" ]; then
                 if ! git apply --ignore-whitespace "$file"; then
                     echo "ERROR: Failed to apply OpenCL patch: $filename"
                     exit 1
                 fi
-            else
-                echo "Skipping OpenCL patch: $filename (USEOPENCL is not 'yes')"
-            fi
-	elif [ "$filename" = "0003-bullet3-opencl-fix.patch" ]; then
-		continue
-        else
-            if ! git apply --ignore-whitespace "$file"; then
-                echo "Warning: Failed to apply patch: $filename"
-            fi
-        fi
     done
 fi
 

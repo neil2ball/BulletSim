@@ -109,7 +109,7 @@ else
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -DOpenGL_GL_PREFERENCE=GLVND \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_FLAGS="-fPIC -DBT_XML_SUPPORT -fvisibility=default"
+            -DCMAKE_CXX_FLAGS="-fPIC -DBT_XML_SUPPORT -O3 -mavx -ffast-math -fvisibility=default -UBT_USE_DOUBLE_PRECISION"
     elif [[ "$MACH" == "aarch64" ]]
     then
         echo "=== Running cmake for arch $MACH"
