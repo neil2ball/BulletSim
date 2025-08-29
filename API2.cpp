@@ -35,11 +35,13 @@
 #include "Util.h"
 #include <stdarg.h>
 
-#include "Bullet3OpenCL/RigidBody/b3GpuRigidBodyPipeline.h"
 #include "Bullet3Common/b3Vector3.h"
 #include "Bullet3Common/b3Quaternion.h"
 #include "Bullet3Common/b3Transform.h"
+
+#include "Bullet3OpenCL/RigidBody/b3GpuRigidBodyPipeline.h"
 #include "Bullet3Collision/NarrowPhaseCollision/shared/b3Collidable.h"
+
 
 #include <BulletCollision/CollisionShapes/btCollisionShape.h>
 #include <BulletCollision/CollisionDispatch/btCollisionObject.h>
@@ -68,6 +70,10 @@
 
 // The minimum thickness for terrain. If less than this, we correct
 #define TERRAIN_MIN_THICKNESS (0.2)
+
+class b3ConvexHullShape;
+class b3TriangleMeshShape;
+struct b3Collidable;
 
 struct VehicleTuning {
     float suspensionStiffness;
@@ -774,4 +780,107 @@ EXTERN_C DLL_EXPORT float GetAngularMotionDisc2(btCollisionShape* shape)
 EXTERN_C DLL_EXPORT float GetContactBreakingThreshold2(btCollisionShape* shape, float defaultFactor)
 {
 	return shape->getContactBreakingThreshold(btScalar(defaultFactor));
+}
+
+// Creates a GPU-simulated body with a bt façade for C#.
+// - GPU is the source of truth (simulation runs on GPU).
+// - A kinematic btRigidBody mirrors the transform for C#/debug/raycasts.
+// - Falls back to CPU-only if GPU is unavailable or the shape isn’t supported.
+EXTERN_C DLL_EXPORT btCollisionObject* CreateBodyFromShape2(
+    BulletSim* sim,
+    btCollisionShape* btShape,
+    IDTYPE id,
+    Vector3 pos,       // NOTE: pos.GetBtVector3() returns a b3Vector3 in the codebase
+    Quaternion rot     // NOTE: rot.GetBtQuaternion() returns a b3Quaternion
+)
+{
+    //bsDebug_Assert(sim != nullptr, "CreateBodyFromShape2: null sim");
+    //bsDebug_AssertIsKnownCollisionShape(btShape, "CreateBodyFromShape2: unknown collision shape");
+
+    // Extract b3 values without converting to bt for the GPU path
+    const auto b3Pos = pos.GetBtVector3();           // actually b3Vector3
+    const auto b3Rot = rot.GetBtQuaternion();        // actually b3Quaternion
+    float p[4] = { b3Pos.x, b3Pos.y, b3Pos.z, 0.f };
+    float q[4] = { b3Rot.x, b3Rot.y, b3Rot.z, b3Rot.w };
+
+    // CPU façade: build a btRigidBody, but make it kinematic if we have a GPU instance
+    // (mass 0 here because the GPU does the simulation; adjust if you add mass input)
+    const float mass = 0.0f;
+    btTransform startT(b3ToBtQuaternion(b3Rot), b3ToBtVector3(b3Pos));
+    SimMotionState* motionState =
+        new SimMotionState(id, startT, &(sim->getWorldData()->updatesThisFrame));
+
+    btVector3 localInertia(0, 0, 0);
+    btRigidBody::btRigidBodyConstructionInfo ci(mass, motionState, btShape, localInertia);
+    btRigidBody* body = new btRigidBody(ci);
+    motionState->RigidBody = body;
+
+    body->setUserPointer(PACKLOCALID(id));
+    bsDebug_RememberCollisionObject(body);
+
+    // Try to register into the GPU pipeline
+	bool gpuOk = false;
+	int gpuId = -1;
+	if (sim->isGpuAvailable())
+	{
+		// Use the GPU pipeline's built-in shape registration methods
+		int collidableIndex = -1;
+		
+		// Check shape type and register accordingly
+		switch (btShape->getShapeType())
+		{
+			case BOX_SHAPE_PROXYTYPE:
+			{
+				btBoxShape* boxShape = (btBoxShape*)btShape;
+				btVector3 halfExtents = boxShape->getHalfExtentsWithMargin();
+				// Use the GPU pipeline's box registration method if available
+				// collidableIndex = sim->getGpuPipeline()->registerBoxShape(...);
+				break;
+			}
+			case SPHERE_SHAPE_PROXYTYPE:
+			{
+				btSphereShape* sphereShape = (btSphereShape*)btShape;
+				float radius = sphereShape->getRadius();
+				// Use the GPU pipeline's sphere registration method if available
+				// collidableIndex = sim->getGpuPipeline()->registerSphereShape(...);
+				break;
+			}
+			// Add cases for other supported shape types
+			default:
+				// Shape type not supported on GPU
+				break;
+		}
+		
+		if (collidableIndex >= 0)
+		{
+			if (b3GpuRigidBodyPipeline* pipeline = sim->getGpuPipeline()) {
+				gpuId = pipeline->registerPhysicsInstance(
+					mass,
+					p,
+					q,
+					collidableIndex,
+					static_cast<int>(id),
+					true);
+			}
+				
+			if (gpuId >= 0)
+			{
+				sim->registerGpuBody(id, gpuId);
+				gpuOk = true;
+			}
+		}
+    }
+
+    // Insert the bt façade into the CPU world.
+    // If GPU is active, make the bt body kinematic so it doesn't get integrated by CPU.
+    if (gpuOk)
+    {
+        body->setCollisionFlags(body->getCollisionFlags() | btCollisionObject::CF_KINEMATIC_OBJECT);
+        body->setActivationState(DISABLE_DEACTIVATION);
+    }
+
+    sim->getDynamicsWorld()->addRigidBody(body);
+    sim->registerCpuBody(id);
+
+    return body; // C# keeps using btCollisionObject* as before
 }

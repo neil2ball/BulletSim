@@ -1,11 +1,24 @@
 #! /usr/bin/env pwsh
 # Script to build BulletSim Windows binaries using locally built Bullet libraries
-
 param(
     [string]$BLIBDIR = "./lib",
     [string]$BINCLUDEDIR = "./include",
     [string]$TARGETBASE = "libBulletSim-3.27"
 )
+
+Write-Host "=== Applying BulletSim patches to include"
+foreach ($file in (Get-Item "./btScalar.h*")) {
+	$filename = $file.Name
+	$filePath = $file.FullName
+		
+	Write-Host "Processing patch: $filename"
+	Copy-Item $filename "./include/LinearMath/$filename"
+	if ($LASTEXITCODE -eq 0) {
+		Write-Host "Applied patch: $filename"
+	} else {
+		Write-Host "Warning: Failed to apply patch: $filename" -ForegroundColor Yellow
+	}
+}
 
 $BASE = Get-Location
 

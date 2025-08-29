@@ -113,6 +113,10 @@ if ($FETCHBULLETSOURCES -eq "yes") {
 		$filename = $file.Name
 		$filePath = $file.FullName
 		
+		if ($filename -eq "0002-opencl-bullet3-onlyfloats.patch") {
+			continue
+		}
+		
 		Write-Host "Processing patch: $filename"
 		git apply --ignore-whitespace $filePath
 		if ($LASTEXITCODE -eq 0) {

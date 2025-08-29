@@ -260,6 +260,9 @@ public:
     
     bool isGpuAvailable() const { return m_gpuAvailable; }
     GpuPhysicsEngine* m_gpuEngine;
+	b3GpuRigidBodyPipeline* getGpuPipeline() const { 
+		return m_gpuEngine ? m_gpuEngine->gpuPipeline : nullptr; 
+	}
     void registerGpuBody(uint32_t id, uint32_t gpuId);
     void registerCpuBody(uint32_t id);
 
@@ -316,5 +319,92 @@ protected:
     void CreateGroundPlane();
     void CreateTerrain();
 };
+
+// ============================================================================================
+// Motion state for rigid bodies in the scene. Updates the map of changed 
+// entities whenever the setWorldTransform callback is fired
+
+static const float POSITION_TOLERANCE = 0.001f;
+static const float ROTATION_TOLERANCE = 0.001f;
+static const float VELOCITY_TOLERANCE = 0.001f;
+static const float ANGULARVELOCITY_TOLERANCE = 0.001f;
+
+class SimMotionState : public btMotionState
+{
+public:
+    btRigidBody* RigidBody;
+    b3Vector3 ZeroVect; // stays b3 if EntityProperties is b3-based
+
+    SimMotionState(
+        IDTYPE id,
+        const btTransform& startTransform,
+        std::map<IDTYPE, EntityProperties*>* updatesThisFrame)
+        : m_properties(id, btToB3Transform(startTransform)),
+          m_lastProperties(id, btToB3Transform(startTransform)),
+          m_xform(btToB3Transform(startTransform)),
+          m_updatesThisFrame(updatesThisFrame)
+    {
+    }
+
+    virtual ~SimMotionState()
+    {
+        m_updatesThisFrame->erase(m_properties.ID);
+    }
+
+    virtual void getWorldTransform(btTransform& worldTrans) const override
+    {
+        worldTrans = b3ToBtTransform(m_xform);
+    }
+
+    virtual void setWorldTransform(const btTransform& worldTrans) override
+    {
+        setWorldTransform(worldTrans, false);
+    }
+
+    virtual void setWorldTransform(const btTransform& worldTrans, bool force)
+    {
+        m_xform = btToB3Transform(worldTrans);
+
+        if (((RigidBody->getCollisionFlags() & BS_RETURN_ROOT_COMPOUND_SHAPE) != 0) 
+            && RigidBody->getCollisionShape()->isCompound())
+        {
+            btCompoundShape* cShape = static_cast<btCompoundShape*>(RigidBody->getCollisionShape());
+            btTransform rootChildTransformL = cShape->getChildTransform(0);
+            btTransform rootChildTransformW = worldTrans * rootChildTransformL;
+
+            m_properties.Position        = btToB3Vector3(rootChildTransformW.getOrigin());
+            m_properties.Rotation        = btToB3Quaternion(rootChildTransformW.getRotation());
+            m_properties.AngularVelocity = btToB3Vector3(RigidBody->getAngularVelocity());
+        }
+        else
+        {
+            m_properties.Position        = btToB3Vector3(worldTrans.getOrigin());
+            m_properties.Rotation        = btToB3Quaternion(worldTrans.getRotation());
+            m_properties.AngularVelocity = btToB3Vector3(RigidBody->getAngularVelocity());
+        }
+
+        m_properties.Velocity = btToB3Vector3(RigidBody->getLinearVelocity());
+
+        if (force
+            || !m_properties.Position.AlmostEqual(m_lastProperties.Position, POSITION_TOLERANCE)
+            || !m_properties.Rotation.AlmostEqual(m_lastProperties.Rotation, ROTATION_TOLERANCE)
+            || ((m_properties.Velocity == ZeroVect && m_properties.AngularVelocity == ZeroVect)
+                && (m_properties.Velocity != m_lastProperties.Velocity
+                    || m_properties.AngularVelocity != m_lastProperties.AngularVelocity))
+            || !m_properties.Velocity.AlmostEqual(m_lastProperties.Velocity, VELOCITY_TOLERANCE)
+            || !m_properties.AngularVelocity.AlmostEqual(m_lastProperties.AngularVelocity, ANGULARVELOCITY_TOLERANCE))
+        {
+            m_lastProperties = m_properties;
+            (*m_updatesThisFrame)[m_properties.ID] = &m_properties;
+        }
+    }
+
+private:
+    std::map<IDTYPE, EntityProperties*>* m_updatesThisFrame;
+    b3Transform m_xform;
+    EntityProperties m_properties;
+    EntityProperties m_lastProperties;
+};
+
 
 #endif //BULLET_SIM_H

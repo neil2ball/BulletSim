@@ -300,6 +300,14 @@ btCollisionObject* BulletSim::findBodyById(uint32_t id)
     return nullptr;
 }
 
+void BulletSim::registerGpuBody(uint32_t id, uint32_t gpuId) {
+    m_gpuBodyIds.push_back(id);
+}
+
+void BulletSim::registerCpuBody(uint32_t id) {
+    m_cpuBodyIds.push_back(id);
+}
+
 // GPU shape creation implementations - all commented out due to dependency issues
 int BulletSim::registerGpuBoxShape(const b3Vector3& halfExtents) {
     if (!m_gpuAvailable || !m_gpuEngine->gpuPipeline) return -1;
