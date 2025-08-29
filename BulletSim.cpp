@@ -41,7 +41,6 @@
 
 // Then include your headers
 #include "WorldData.h"
-#include "VectorConverters.h"
 #include "BulletSim.h"
 #include "Util.h"
 

@@ -38,16 +38,13 @@
 #undef MAX_NUM_PARTS_IN_BITS
 #endif
 
-// Then include your headers
-#include "WorldData.h"
-#include "VectorConverters.h"
-
 #define CL_TARGET_OPENCL_VERSION 120
 #include <CL/cl.h>
 
 #include "DebugLogic.h"
 #include "ArchStuff.h"
 #include "APIData.h"
+#include "WorldData.h"
 #include "GpuPhysicsEngine.h"
 
 #include "Bullet3OpenCL/RigidBody/b3GpuRigidBodyPipeline.h"

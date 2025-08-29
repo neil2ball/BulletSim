@@ -47,8 +47,6 @@
 #include <BulletCollision/CollisionDispatch/btCollisionObject.h>
 #include "BulletDynamics/Dynamics/btRigidBody.h"
 
-#include "VectorConverters.h"
-
 #include <map>
 #include <cstdint>
 
@@ -660,11 +658,7 @@ EXTERN_C DLL_EXPORT void DumpActivationInfo2(BulletSim* sim)
  */
 EXTERN_C DLL_EXPORT RaycastHit RayTest2(BulletSim* world, Vector3 from, Vector3 to, unsigned int filterGroup, unsigned int filterMask)
 {
-	b3Vector3 f_b3 = from.GetBtVector3();
-	b3Vector3 t_b3 = to.GetBtVector3();
-	btVector3 f_bt = b3ToBtVector3(f_b3);
-	btVector3 t_bt = b3ToBtVector3(t_b3);
-	return world->RayTest(f_bt, t_bt, (short)filterGroup, (short)filterMask);
+	return world->RayTest(from.GetBtVector3(), to.GetBtVector3(), (short)filterGroup, (short)filterMask);
 }
 
 EXTERN_C DLL_EXPORT btCollisionShape* CreateInnerShape(btCollisionShape* outerShape, float scaleFactor)
@@ -709,7 +703,7 @@ EXTERN_C DLL_EXPORT btCollisionShape* BuildCapsuleShape2(BulletSim* sim, float r
 	if (shape)
 	{
 		shape->setMargin(sim->getWorldData()->params->collisionMargin);
-		shape->setLocalScaling(b3ToBtVector3(scale.GetBtVector3())); //convert GetBtVector3 (in name only as it is truly a b3Vector3)
+		shape->setLocalScaling(scale.GetBtVector3());
 		bsDebug_RememberCollisionShape(shape);
 	}
 	return shape;
@@ -739,7 +733,7 @@ EXTERN_C DLL_EXPORT btCollisionShape* BuildNativeShape2(BulletSim* sim, ShapeDat
 	if (shape != NULL)
 	{
 		shape->setMargin(btScalar(sim->getWorldData()->params->collisionMargin));
-		shape->setLocalScaling(b3ToBtVector3(shapeData.Scale.GetBtVector3())); //bt in name only!!!
+		shape->setLocalScaling(shapeData.Scale.GetBtVector3());
 		
 		        // Check for significant hollows or cuts
         float minOpeningFraction = CalculateMinOpeningFraction(
@@ -790,23 +784,23 @@ EXTERN_C DLL_EXPORT btCollisionObject* CreateBodyFromShape2(
     BulletSim* sim,
     btCollisionShape* btShape,
     IDTYPE id,
-    Vector3 pos,       // NOTE: pos.GetBtVector3() returns a b3Vector3 in the codebase
-    Quaternion rot     // NOTE: rot.GetBtQuaternion() returns a b3Quaternion
+    Vector3 pos,
+    Quaternion rot
 )
 {
     //bsDebug_Assert(sim != nullptr, "CreateBodyFromShape2: null sim");
     //bsDebug_AssertIsKnownCollisionShape(btShape, "CreateBodyFromShape2: unknown collision shape");
 
     // Extract b3 values without converting to bt for the GPU path
-    const auto b3Pos = pos.GetBtVector3();           // actually b3Vector3
-    const auto b3Rot = rot.GetBtQuaternion();        // actually b3Quaternion
+    const auto b3Pos = pos.GetB3Vector3();
+    const auto b3Rot = rot.GetB3Quaternion();
     float p[4] = { b3Pos.x, b3Pos.y, b3Pos.z, 0.f };
     float q[4] = { b3Rot.x, b3Rot.y, b3Rot.z, b3Rot.w };
 
     // CPU façade: build a btRigidBody, but make it kinematic if we have a GPU instance
     // (mass 0 here because the GPU does the simulation; adjust if you add mass input)
     const float mass = 0.0f;
-    btTransform startT(b3ToBtQuaternion(b3Rot), b3ToBtVector3(b3Pos));
+    btTransform startT(rot.GetBtQuaternion(), pos.GetBtVector3());
     SimMotionState* motionState =
         new SimMotionState(id, startT, &(sim->getWorldData()->updatesThisFrame));
 

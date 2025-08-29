@@ -33,6 +33,12 @@
 #include "Bullet3Common/b3Vector3.h"
 #include "Bullet3Common/b3Quaternion.h"
 #include "Bullet3Common/b3Transform.h"
+#include "Bullet3Common/b3Matrix3x3.h"
+
+#include "LinearMath/btTransform.h"
+#include "LinearMath/btVector3.h"
+#include "LinearMath/btQuaternion.h"
+#include "LinearMath/btMatrix3x3.h"
 
 #include "ArchStuff.h"
 
@@ -81,12 +87,17 @@ struct Vector3
 			(((v.Y - nEpsilon) < Y) && (Y < (v.Y + nEpsilon))) &&
 			(((v.Z - nEpsilon) < Z) && (Z < (v.Z + nEpsilon)));
 	}
-
-	b3Vector3 GetBtVector3()
+	
+	b3Vector3 GetB3Vector3()
 	{
-		b3Vector3 someVector;
-		someVector.setValue(0.0, 0.0, 0.0);
-		return someVector;
+		b3Vector3 result;
+		result.setValue(X, Y, Z);
+		return result;
+	}
+	
+	btVector3 GetBtVector3()
+	{
+		return btVector3(X, Y, Z);
 	}
 
 	void operator= (const b3Vector3& v)
@@ -152,9 +163,14 @@ struct Quaternion
 			(((q.W - nEpsilon) < W) && (W < (q.W + nEpsilon)));
 	}
 
-	b3Quaternion GetBtQuaternion()
+	b3Quaternion GetB3Quaternion()
 	{
 		return b3Quaternion(X, Y, Z, W);
+	}
+	
+	btQuaternion GetBtQuaternion()
+	{
+		return btQuaternion(X, Y, Z, W);
 	}
 
 	void operator= (const b3Quaternion& q)
@@ -182,9 +198,17 @@ public:
 		m_el[1] = o.getRow(1);
 		m_el[2] = o.getRow(2);
 	}
-	b3Matrix3x3 GetBtMatrix3x3()
+	b3Matrix3x3 GetB3Matrix3x3()
 	{
 		return b3Matrix3x3(
+			m_el[0].X, m_el[0].Y, m_el[0].Z,
+			m_el[1].X, m_el[1].Y, m_el[1].Z,
+			m_el[2].X, m_el[2].Y, m_el[2].Z );
+	}
+	
+	btMatrix3x3 GetBtMatrix3x3()
+	{
+		return btMatrix3x3(
 			m_el[0].X, m_el[0].Y, m_el[0].Z,
 			m_el[1].X, m_el[1].Y, m_el[1].Z,
 			m_el[2].X, m_el[2].Y, m_el[2].Z );
@@ -208,11 +232,15 @@ public:
 		m_basis = t.getBasis();
 		m_origin = t.getOrigin();
 	}
-	b3Transform GetBtTransform()
+	b3Transform GetB3Transform()
 	{
-		return b3Transform(m_basis.GetBtMatrix3x3(), m_origin.GetBtVector3());
+		return b3Transform(m_basis.GetB3Matrix3x3(), m_origin.GetB3Vector3());
 	}
-
+	
+	btTransform GetBtTransform()
+	{
+		return btTransform(m_basis.GetBtMatrix3x3(), m_origin.GetBtVector3());
+	}
 };
 
 // API-exposed structure defining an object
@@ -416,6 +444,65 @@ struct HACDParams
 	float vHACDconvexHullApprox;	// approximate hulls to accelerate computation
 	float vHACDoclAcceleration;		// use OpenCL
 };
+
+// --- Vector ---
+inline btVector3 b3ToBtVector3(const b3Vector3& v) {
+    return btVector3(v.x, v.y, v.z);
+}
+
+inline b3Vector3 btToB3Vector3(const btVector3& v) {
+    b3Vector3 result;
+    result.setValue(v.x(), v.y(), v.z());
+    return result;
+}
+
+// --- Quaternion ---
+
+inline btQuaternion b3ToBtQuaternion(const b3Quaternion& b3Quat) {
+    return btQuaternion(b3Quat.x, b3Quat.y, b3Quat.z, b3Quat.w);
+}
+
+inline b3Quaternion btToB3Quaternion(const btQuaternion& btQuat) {
+    b3Quaternion result;
+    result.setValue(btQuat.x(), btQuat.y(), btQuat.z(), btQuat.w());
+    return result;
+}
+
+// --- Transform ---
+
+inline btTransform b3ToBtTransform(const b3Transform& t) {
+    // btTransform expects (rotation quaternion, origin vector)
+    return btTransform(
+        b3ToBtQuaternion(t.getRotation()),
+        b3ToBtVector3(t.getOrigin())
+    );
+}
+
+inline b3Transform btToB3Transform(const btTransform& t) {
+    // Use setters to avoid relying on constructor availability/signature differences
+    b3Transform result;
+    result.setRotation(btToB3Quaternion(t.getRotation()));
+    result.setOrigin(btToB3Vector3(t.getOrigin()));
+    return result;
+}
+
+// --- Matrix3x3 ---
+
+inline btMatrix3x3 b3ToBtMatrix3x3(const b3Matrix3x3& m) {
+    btMatrix3x3 result;
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            result[i][j] = m[i][j];
+    return result;
+}
+
+inline b3Matrix3x3 btToB3Matrix3x3(const btMatrix3x3& m) {
+    b3Matrix3x3 result;
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            result[i][j] = m[i][j];
+    return result;
+}
 
 #define CONSTRAINT_NOT_SPECIFIED (-1)
 #define CONSTRAINT_NOT_SPECIFIEDF (-1.0)
