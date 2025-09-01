@@ -61,7 +61,9 @@ try {
 		"-DBUILD_BULLET2_DEMOS=OFF",
 		"-DBUILD_EXTRAS=ON",
 		"-DBUILD_BULLET3=ON",
+		"-DUSE_OPENMP=ON",
 		"-DUSE_OPENCL=ON",
+		"-DBT_USE_PROFILE=ON",
 		"-DBUILD_UNIT_TESTS=OFF",
 		"-DBUILD_BULLET_ROBOTICS_EXTRA=ON",
 		"-DBUILD_BULLET_ROBOTICS_GUI_EXTRA=OFF",
@@ -78,7 +80,10 @@ try {
 		"-DINSTALL_EXTRA_LIBS=ON",
 		"-DINSTALL_LIBS=ON",
 		"-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
-		"-DCMAKE_CXX_FLAGS=/EHsc /DBT_XML_SUPPORT /O2 /arch:AVX /fp:fast /arch:AVX -UBT_USE_DOUBLE_PRECISION",
+		"-DBUILD_BULLET3_COLLISION=ON",
+		"-DBUILD_BULLET3_DYNAMICS=ON",
+		"-DBUILD_BULLET3_GEOMETRY=ON",
+		"-DCMAKE_CXX_FLAGS=/EHsc /DBT_XML_SUPPORT /O2 /arch:AVX /fp:fast /Gd -UBT_USE_DOUBLE_PRECISION /openmp:experimental",
 		"-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE=`"$buildAbsPath/lib/Release`"",
 		"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE=`"$buildAbsPath/lib/Release`"",
 		"-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE=`"$buildAbsPath/lib/Release`"",
@@ -110,7 +115,14 @@ try {
 		@{Name="BulletSoftBody"; Path="src\BulletSoftBody\BulletSoftBody.vcxproj"},
 		@{Name="BulletInverseDynamics"; Path="Extras\InverseDynamics\BulletInverseDynamicsUtils.vcxproj"},
 		@{Name="HACD"; Path="Extras\HACD\HACD.vcxproj"},
-		@{Name="Bullet3OpenCL_clew"; Path="src\Bullet3OpenCL\Bullet3OpenCL_clew.vcxproj"}
+		@{Name="Bullet3OpenCL_clew"; Path="src\Bullet3OpenCL\Bullet3OpenCL_clew.vcxproj"},
+		@{Name="Bullet3Dynamics"; Path="src\Bullet3Dynamics\Bullet3Dynamics.vcxproj"},
+		@{Name="Bullet3Collision"; Path="src\Bullet3Collision\Bullet3Collision.vcxproj"},
+		@{Name="Bullet3Geometry"; Path="src\Bullet3Geometry\Bullet3Geometry.vcxproj"},
+		@{Name="BulletSoftBody"; Path="src\BulletSoftBody\BulletSoftBody.vcxproj"},
+		@{Name="BulletFileLoader"; Path="Extras\Serialize\BulletFileLoader\BulletFileLoader.vcxproj"},
+		@{Name="BulletWorldImporter"; Path="Extras\Serialize\BulletWorldImporter\BulletWorldImporter.vcxproj"},
+		@{Name="BulletXmlWorldImporter"; Path="Extras\Serialize\BulletXmlWorldImporter\BulletXmlWorldImporter.vcxproj"}
 	)
 
 	foreach ($item in $buildOrder) {

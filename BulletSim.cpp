@@ -1031,7 +1031,7 @@ btCollisionShape* BulletSim::BuildConvexHullShapeFromMesh2(btCollisionShape* mes
 	int tVertexStride = vertexStride / sizeof(float);
 	int* tIndices = (int*) indexBase;
 	int tIndicesStride = indexStride / sizeof(int);
-	//m_worldData.BSLog("BuildConvexHullShapeFromMesh2: nVertices=%d, nIndices=%d", numVerts, numFaces*3);	// DEBUG DEBUG
+	m_worldData.BSLog("BuildConvexHullShapeFromMesh2: nVertices=%d, nIndices=%d", numVerts, numFaces*3);	// DEBUG DEBUG
 
 	// Add points to the hull shape
 	for(int ii=0; ii < (numFaces * tIndicesStride); ii += tIndicesStride ) 

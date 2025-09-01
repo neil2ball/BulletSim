@@ -113,24 +113,28 @@ if ($FETCHBULLETSOURCES -eq "yes") {
 		$filename = $file.Name
 		$filePath = $file.FullName
 		
+		if ($filename -eq "0002-opencl-bullet3-onlyfloats-linux.patch") {
+			continue
+		}
+		
 		Write-Host "Processing patch: $filename"
 		git apply --ignore-whitespace $filePath
 		if ($LASTEXITCODE -eq 0) {
-			Write-Host "Applied patch: $filename"
+			Write-Host "Applied patch: $filename" -ForegroundColor Green
 		} else {
-			Write-Host "Warning: Failed to apply patch: $filename" -ForegroundColor Yellow
+			Write-Host "Warning: Failed to apply patch: $filename" -ForegroundColor Red
 		}
 	}
 	
 	# APPLY THE OPENCL CONFIG DIRECTLY TO THE CMakeLists.txt
-	$cmakeFile = "CMakeLists.txt"
-	$content = Get-Content $cmakeFile -Raw
+	#$cmakeFile = "CMakeLists.txt"
+	#$content = Get-Content $cmakeFile -Raw
 
 	# ADD THE OPENCL CONFIG RIGHT AFTER THE FIRST LINE
-	$newContent = $content -replace '(cmake_minimum_required\(VERSION 3\.5\))', "`$1`n`nset(OPENCL_FOUND TRUE)`nset(OPENCL_INCLUDE_DIR `"C:/OpenCL-SDK/include/CL`")`nset(OPENCL_LIBRARY `"C:/OpenCL-SDK/lib/OpenCL.lib`")`nset(USE_DOUBLE_PRECISION OFF CACHE BOOL `"Use double precision`" FORCE)`nset(USE_OPENCL ON CACHE BOOL `"`" FORCE)`nset(BUILD_BULLET3 ON CACHE BOOL `"`" FORCE)`n"
+	#$newContent = $content -replace '(cmake_minimum_required\(VERSION 3\.5\))', "`$1`n`nset(OPENCL_FOUND TRUE)`nset(OPENCL_INCLUDE_DIR `"C:/OpenCL-SDK/include/CL`")`nset(OPENCL_LIBRARY `"C:/OpenCL-SDK/lib/OpenCL.lib`")`nset(USE_DOUBLE_PRECISION OFF CACHE BOOL `"Use double precision`" FORCE)`nset(USE_OPENCL ON CACHE BOOL `"`" FORCE)`nset(BUILD_BULLET3 ON CACHE BOOL `"`" FORCE)`n"
 
-	Set-Content -Path $cmakeFile -Value $newContent -NoNewline
-	Write-Host "SUCCESS: Directly applied OpenCL config to CMakeLists.txt" -ForegroundColor Green
+	#Set-Content -Path $cmakeFile -Value $newContent -NoNewline
+	#Write-Host "SUCCESS: Directly applied OpenCL config to CMakeLists.txt" -ForegroundColor Green
 }
 
 Set-Location $BASE
