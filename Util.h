@@ -29,7 +29,6 @@
 
 #ifndef UTIL_H
 #define UTIL_H
-
 // This routine exists for two reasons:
 // 1) compiler folk say this is an implementation that the compiler can
 //    convert into machine specific optimizations (like SSE2 on x86);

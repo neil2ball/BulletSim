@@ -24,131 +24,202 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+#define CL_TARGET_OPENCL_VERSION 120
+// Undef conflicting macros
+#ifdef MAX_NUM_PARTS_IN_BITS
+#undef MAX_NUM_PARTS_IN_BITS
+#endif
+#include <clew/clew.h>
+#include <CL/cl.h>
+// Then include Bullet3 headers
+#include "Bullet3OpenCL/Initialize/b3OpenCLUtils.h"
+#include "Bullet3OpenCL/BroadphaseCollision/b3GpuBroadphaseInterface.h"
+#include "Bullet3OpenCL/RigidBody/b3GpuNarrowPhase.h"
+#include "Bullet3OpenCL/RigidBody/b3GpuRigidBodyPipeline.h"
+#include "Bullet3Collision/BroadPhaseCollision/b3DynamicBvhBroadphase.h"
 
+
+// Then include your headers
+#include "WorldData.h"
 #include "BulletSim.h"
 #include "Util.h"
+#include "APIData.h"
 
+#include "Bullet3Common/b3Vector3.h"
+#include "Bullet3Collision/NarrowPhaseCollision/b3RaycastInfo.h"
+
+
+#include "Bullet3OpenCL/ParallelPrimitives/b3OpenCLArray.h"
+
+#include <BulletCollision/CollisionDispatch/btGhostObject.h>
+#include "BulletCollision/CollisionDispatch/btSimulationIslandManager.h"
 #include "BulletCollision/CollisionDispatch/btSimulationIslandManager.h"
 #include "BulletCollision/CollisionShapes/btTriangleShape.h"
 #include "LinearMath/btGeometryUtil.h"
 
 #include "BulletCollision/Gimpact/btGImpactCollisionAlgorithm.h"
 #include "BulletCollision/Gimpact/btGImpactShape.h"
+#include <iostream>
 
-#if defined(USEBULLETHACD)
-#if defined(__linux__) || defined(__APPLE__) 
-#include "HACD/hacdHACD.h"
-#elif defined(_WIN32) || defined(_WIN64)
-#include "HACD/hacdHACD.h"
-#else
-#error "Platform type not understood."
-#endif
-#endif
-
-#if defined(USEVHACD)
-#include "VHACD.h"
-using namespace VHACD;
-#endif
-
+btDynamicsWorld* gWorld = nullptr;
 // Linkages to debugging dump routines
 extern "C" void DumpPhysicsStatistics2(BulletSim* sim);
 extern "C" void DumpActivationInfo2(BulletSim* sim);
 
-// Bullet has some parameters that are just global variables
-extern ContactAddedCallback gContactAddedCallback;
-extern btScalar gContactBreakingThreshold;
 
-// Constants for reasonable bounds validation
-const int MAX_REASONABLE_INDICES = 1000000;
-const int MAX_REASONABLE_VERTICES = 1000000;
-const int MAX_REASONABLE_HULLS = 1000;
+const btScalar SimMotionState::POSITION_TOLERANCE = btScalar(0.001f);
+const btScalar SimMotionState::ROTATION_TOLERANCE = btScalar(0.001f);
+const btScalar SimMotionState::VELOCITY_TOLERANCE = btScalar(0.001f);
+const btScalar SimMotionState::ANGULARVELOCITY_TOLERANCE = btScalar(0.001f);
 
-BulletSim::BulletSim(btScalar maxX, btScalar maxY, btScalar maxZ)
-    : m_broadphase(nullptr),
-      m_dispatcher(nullptr),
-      m_solver(nullptr),
-      m_collisionConfiguration(nullptr),
-      m_gpuPipeline(nullptr),
-      m_gpuBroadphase(nullptr),
-      m_gpuNarrowphase(nullptr),
-      m_openclContext(nullptr),
-      m_openclQueue(nullptr),
-      m_openclDevice(nullptr),
-      m_dumpStatsCount(0),
-      m_maxUpdatesPerFrame(0),
-      m_updatesThisFrameArray(nullptr),
-      m_collidersThisFrameArray(nullptr),
-      maxCollisionsPerFrame(0),
-      collisionsThisFrame(0),
-      m_worldData() // Explicitly initialize WorldData if it has a constructor
+BulletSim::BulletSim(float maxX, float maxY, float maxZ)
 {
 	bsDebug_Initialize();
 
 	// Make sure structures that will be created in initPhysics are marked as not created
-	m_worldData.dynamicsWorld = nullptr;
-	m_worldData.gpuPipeline = nullptr;
-	m_worldData.gpuBroadphase = nullptr;
-	m_worldData.gpuNarrowphase = nullptr;
-	m_worldData.openclContext = nullptr;
-	m_worldData.openclQueue = nullptr;
-	m_worldData.openclDevice = nullptr;
+	m_worldData.dynamicsWorld = NULL;
 
 	m_worldData.sim = this;
 
 	m_worldData.MinPosition = btVector3(0, 0, 0);
 	m_worldData.MaxPosition = btVector3(maxX, maxY, maxZ);
 	
-	//increase sub-step resolution and filter by contact impulse
+	//increase sub‑step resolution and filter by contact impulse
 	m_maxSubSteps = DEFAULT_MAX_SUBSTEPS;
 	m_contactImpulseThreshold = DEFAULT_CONTACT_IMPULSE_THRESHOLD;
 }
 
-// Called when a collision point is being added to the manifold.
-// This is used to modify the collision normal to make meshes collidable on only one side.
-// Based on rule: "Ignore collisions if dot product of hit normal and a vector pointing to the center of the the object
-//     is less than zero."
-// Code based on example code given in: http://www.bulletphysics.org/Bullet/phpBB3/viewtopic.php?f=9&t=3052&start=15#p12308
-// Code used under Creative Commons, ShareAlike, Attribution as per Bullet forums.
-static void SingleSidedMeshCheck(btManifoldPoint& cp, const btCollisionObjectWrapper* colObj, int partId, int index)
+
+// Step the simulation forward by one full step and potentially some number of substeps
+// In BulletSim.cpp
+int BulletSim::PhysicsStep2(btScalar timeStep, int maxSubSteps, btScalar fixedTimeStep, int* updatedEntityCount, int* collidersCount)
 {
-        const btCollisionShape* shape = colObj->getCollisionShape();
+    int numSimSteps = 0;
 
-		// TODO: compound shapes don't have this proxy type.  How to get vector pointing to object middle?
-        if (shape->getShapeType() != TRIANGLE_SHAPE_PROXYTYPE) return;
-        const btTriangleShape* tshape = static_cast<const btTriangleShape*>(colObj->getCollisionShape());
+    if (m_worldData.dynamicsWorld)
+    {
+        // Clear collision data
+        m_collidersThisFrame.clear();
+        collisionsThisFrame = 0;
 
-        btVector3 v1 = tshape->m_vertices1[0];
-        btVector3 v2 = tshape->m_vertices1[1];
-        btVector3 v3 = tshape->m_vertices1[2];
-
-		// Create a normal pointing to the center of the mesh based on the first triangle
-        btVector3 normal = (v2-v1).cross(v3-v1);
-
-		// Since the collision points are in local coordinates, create a transform for the collided
-		//    object like it was at <0, 0, 0>.
-        btTransform orient = colObj->getWorldTransform();
-        orient.setOrigin( btVector3(0.0, 0.0, 0.0) );
-
-		// Rotate that normal to world coordinates and normalize
-        normal = orient * normal;
-        normal.normalize();
-
-		// Dot the normal to the center and the collision normal to see if the collision normal is pointing in or out.
-        btScalar dot = normal.dot(cp.m_normalWorldOnB);
-        btScalar magnitude = cp.m_normalWorldOnB.length();
-        normal *= dot > 0 ? magnitude : -magnitude;
-
-        cp.m_normalWorldOnB = normal;
+        int actualMaxSubSteps = (maxSubSteps > 0) ? maxSubSteps : m_maxSubSteps;
+        
+        if (m_worldData.isGpuAvailable) {
+            // Call stepSimulation on the GPU pipeline
+            m_worldData.gpuPipeline->stepSimulation(timeStep);
+            
+            // Handle substeps
+            btScalar remainingTime = timeStep;
+            int stepsTaken = 0;
+            
+            while (remainingTime > 0.0f && stepsTaken < actualMaxSubSteps) {
+                btScalar dt = (remainingTime > fixedTimeStep) ? fixedTimeStep : remainingTime;
+                m_worldData.gpuPipeline->integrate(dt);
+                remainingTime -= dt;
+                stepsTaken++;
+            }
+            
+			// Step GPU world only
+			m_worldData.gpuPipeline->stepSimulation(timeStep);
+			
+            // Synchronize data
+            synchronizeGpuCpuData();
+        } else {
+            // CPU-only fallback
+            numSimSteps = m_worldData.dynamicsWorld->stepSimulation(timeStep, actualMaxSubSteps, fixedTimeStep);
+        }
+        
+        // Count rigid bodies for updatedEntityCount
+        if (updatedEntityCount)
+        {
+            int rigidBodyCount = 0;
+            for (int i = m_worldData.dynamicsWorld->getNumCollisionObjects() - 1; i >= 0; i--)
+            {
+                btCollisionObject* obj = m_worldData.dynamicsWorld->getCollisionObjectArray()[i];
+                if (obj->getInternalType() & btCollisionObject::CO_RIGID_BODY)
+                    rigidBodyCount++;
+            }
+            *updatedEntityCount = rigidBodyCount;
+        }
+        
+        if (collidersCount)
+            *collidersCount = collisionsThisFrame;
+    }
+    
+    return numSimSteps;
 }
 
-// Check the collision point and modify the collision direction normal to only point "out" of the mesh
-static bool SingleSidedMeshCheckCallback(btManifoldPoint& cp, 
-							const btCollisionObjectWrapper* colObj0, int partId0, int index0,
-							const btCollisionObjectWrapper* colObj1, int partId1, int index1)
+void BulletSim::synchronizeGpuCpuData()
 {
-        SingleSidedMeshCheck(cp, colObj0, partId0, index0);
-        SingleSidedMeshCheck(cp, colObj1, partId1, index1);
-        return true;
+    if (!m_worldData.isGpuAvailable || !m_worldData.gpuPipeline) return;
+
+    b3GpuRigidBodyPipeline* pipeline = m_worldData.gpuPipeline;
+    cl_command_queue queue = m_worldData.openclQueue;
+
+    // Get the raw GPU buffer
+    cl_mem bodyBuffer = pipeline->getBodyBuffer();
+
+    // Get number of bodies
+    int numBodies = pipeline->getNumBodies();
+    size_t bufferSize = numBodies * sizeof(b3RigidBodyData);
+
+    // Allocate host-side buffer
+    b3RigidBodyData* bodyData = new b3RigidBodyData[numBodies];
+
+    // Copy GPU → CPU
+    cl_int err = clEnqueueReadBuffer(
+        queue,
+        bodyBuffer,
+        CL_TRUE,        // blocking read
+        0,
+        bufferSize,
+        bodyData,
+        0, nullptr, nullptr
+    );
+
+    if (err != CL_SUCCESS) {
+        delete[] bodyData;
+        return; // or log error
+    }
+
+    // Copy transforms from GPU to CPU
+    for (uint32_t bodyId : m_gpuBodyIds) {
+        if (btCollisionObject* obj = findBodyById(bodyId)) {
+			m_objToGpuBodyId[obj] = bodyId;
+            b3Vector3 pos = bodyData[bodyId].m_pos;
+            b3Quaternion rot = bodyData[bodyId].m_quat;
+
+            btTransform gpuTransform;
+            gpuTransform.setOrigin(btVector3(pos.x, pos.y, pos.z));
+            gpuTransform.setRotation(btQuaternion(rot.x, rot.y, rot.z, rot.w));
+
+            obj->setWorldTransform(gpuTransform);
+        }
+    }
+
+    // Copy transforms from CPU to GPU
+    for (uint32_t bodyId : m_cpuBodyIds) {
+        if (btCollisionObject* obj = findBodyById(bodyId)) {
+            if (obj->isActive()) {
+                const btTransform& cpuTransform = obj->getWorldTransform();
+                bodyData[bodyId].m_pos = btToB3Vector3(cpuTransform.getOrigin());
+                bodyData[bodyId].m_quat = btToB3Quaternion(cpuTransform.getRotation());
+            }
+        }
+    }
+
+    // Copy CPU → GPU
+    err = clEnqueueWriteBuffer(
+        queue,
+        bodyBuffer,
+        CL_TRUE,        // blocking write
+        0,
+        bufferSize,
+        bodyData,
+        0, nullptr, nullptr
+    );
+
+    delete[] bodyData;
 }
 
 // After each sub-step, this routine is called.
@@ -202,9 +273,10 @@ static void SubstepCollisionCallback(btDynamicsWorld *world, btScalar timeStep) 
 	}
 }
 
+// In BulletSim.cpp, replace the gravity setting code:
 void BulletSim::initPhysics2(ParamBlock* parms, 
-							int maxCollisions, CollisionDesc* collisionArray, 
-							int maxUpdates, EntityProperties* updateArray)
+                            int maxCollisions, CollisionDesc* collisionArray, 
+                            int maxUpdates, EntityProperties* updateArray)
 {
 	// Tell the world we're initializing and output size of types so we can
 	//    debug mis-alignments when changing architecture.
@@ -339,103 +411,161 @@ void BulletSim::initPhysics2(ParamBlock* parms,
 
 	// foreach body that you want the callback, enable it with:
 	// body->setCollisionFlags(body->getCollisionFlags() | btCollisionObject::CF_CUSTOM_MATERIAL_CALLBACK);
-
 }
 
 void BulletSim::exitPhysics2()
 {
-	if (m_worldData.dynamicsWorld == NULL)
-		return;
+    printf("[exitPhysics2] START this=%p\n", (void*)this);
 
-	// Delete solver
-	if (m_solver != NULL)
-	{
-		delete m_solver;
-		m_solver = NULL;
-	}
+    if (m_worldData.isGpuAvailable)
+    {
+        // =========================
+        // GPU CLEANUP
+        // =========================
+        printf("[exitPhysics2] GPU mode cleanup\n");
 
-	// Delete broadphase
-	if (m_broadphase != NULL)
-	{
-		delete m_broadphase;
-		m_broadphase = NULL;
-	}
+        if (m_worldData.gpuPipeline) {
+            printf("[exitPhysics2] deleting gpuPipeline %p\n", (void*)m_worldData.gpuPipeline);
+            delete m_worldData.gpuPipeline;
+            m_worldData.gpuPipeline = nullptr;
+        }
+        if (m_worldData.gpuNarrowphase) {
+            printf("[exitPhysics2] deleting gpuNarrowphase %p\n", (void*)m_worldData.gpuNarrowphase);
+            delete m_worldData.gpuNarrowphase;
+            m_worldData.gpuNarrowphase = nullptr;
+        }
+        if (m_worldData.gpuBroadphaseSap) {
+            printf("[exitPhysics2] deleting gpuBroadphaseSap %p\n", (void*)m_worldData.gpuBroadphaseSap);
+            delete m_worldData.gpuBroadphaseSap;
+            m_worldData.gpuBroadphaseSap = nullptr;
+        }
+        if (m_worldData.gpuBroadphaseDbvt) {
+            printf("[exitPhysics2] deleting gpuBroadphaseDbvt %p\n", (void*)m_worldData.gpuBroadphaseDbvt);
+            delete m_worldData.gpuBroadphaseDbvt;
+            m_worldData.gpuBroadphaseDbvt = nullptr;
+        }
 
-	// Delete dispatcher
-	if (m_dispatcher != NULL)
-	{
-		delete m_dispatcher;
-		m_dispatcher = NULL;
-	}
+        if (m_worldData.openclQueue) {
+            printf("[exitPhysics2] releasing openclQueue %p\n", (void*)m_worldData.openclQueue);
+            clReleaseCommandQueue(m_worldData.openclQueue);
+            m_worldData.openclQueue = nullptr;
+        }
+        if (m_worldData.openclContext) {
+            printf("[exitPhysics2] releasing openclContext %p\n", (void*)m_worldData.openclContext);
+            clReleaseContext(m_worldData.openclContext);
+            m_worldData.openclContext = nullptr;
+        }
+    }
+    else
+    {
+        printf("[exitPhysics2] GPU unavailable — skipping GPU cleanup\n");
+    }
 
-	// Delete collision config
-	if (m_collisionConfiguration != NULL)
-	{
-		delete m_collisionConfiguration;
-		m_collisionConfiguration = NULL;
-	}
+    // =========================
+    // CPU WORLD TEARDOWN
+    // =========================
+    btDynamicsWorld* world = m_worldData.dynamicsWorld;
+    printf("[exitPhysics2] dynamicsWorld=%p\n", (void*)world);
+
+    if (world) {
+        world->setInternalTickCallback(nullptr);
+
+        // Remove constraints
+        for (int i = world->getNumConstraints() - 1; i >= 0; --i) {
+            btTypedConstraint* c = world->getConstraint(i);
+            printf("[exitPhysics2] removing constraint[%d]=%p\n", i, (void*)c);
+            world->removeConstraint(c);
+            delete c;
+        }
+
+        // Remove collision objects
+        for (int i = world->getNumCollisionObjects() - 1; i >= 0; --i) {
+            btCollisionObject* obj = world->getCollisionObjectArray()[i];
+            printf("[exitPhysics2] removing obj[%d]=%p\n", i, (void*)obj);
+
+            btRigidBody* body = btRigidBody::upcast(obj);
+            if (body) {
+                world->removeRigidBody(body);
+                btMotionState* ms = body->getMotionState();
+                if (ms) {
+                    delete ms;
+                    body->setMotionState(nullptr);
+                }
+            } else {
+                world->removeCollisionObject(obj);
+            }
+            delete obj;
+        }
+
+        // Clear manifolds
+        if (m_worldData.dispatcher) {
+            int mcount = m_worldData.dispatcher->getNumManifolds();
+            for (int i = 0; i < mcount; ++i) {
+                btPersistentManifold* man = m_worldData.dispatcher->getManifoldByIndexInternal(i);
+                if (man) man->clearManifold();
+            }
+        }
+
+        delete world;
+        m_worldData.dynamicsWorld = nullptr;
+    }
+
+    // Clear maps
+    m_worldData.updatesThisFrame.clear();
+    m_worldData.specialCollisionObjects.clear();
+
+    // Delete CPU components
+    if (m_worldData.solver) { delete m_worldData.solver; m_worldData.solver = nullptr; }
+    if (m_worldData.broadphase) { delete m_worldData.broadphase; m_worldData.broadphase = nullptr; }
+    if (m_worldData.dispatcher) { delete m_worldData.dispatcher; m_worldData.dispatcher = nullptr; }
+    if (m_worldData.collisionConfiguration) { delete m_worldData.collisionConfiguration; m_worldData.collisionConfiguration = nullptr; }
+
+    printf("[exitPhysics2] END\n");
 }
 
-// Step the simulation forward by one full step and potentially some number of substeps
-int BulletSim::PhysicsStep2(btScalar timeStep, int maxSubSteps, btScalar fixedTimeStep, int* updatedEntityCount, int* collidersCount)
+
+
+btCollisionObject* BulletSim::findBodyById(uint32_t id)
 {
-	int numSimSteps = 0;
-
-	if (m_worldData.dynamicsWorld)
-	{
-
-		// All collisions are recorded by the substep callback which populate m_collidersThisFrame
-		m_collidersThisFrame.clear();
-		collisionsThisFrame = 0;
-
-		// The simulation calls the SimMotionState to put object updates into updatesThisFrame.
-		// m_worldData.BSLog("Before step");
-		// numSimSteps = m_worldData.dynamicsWorld->stepSimulation(timeStep, maxSubSteps, fixedTimeStep);
-		// m_worldData.BSLog("After step. Steps=%d,updates=%d", numSimSteps, m_worldData.updatesThisFrame.size());
-		
-		//increase sub-step resolution and filter by contact impulse
-		int actualMaxSubSteps = (maxSubSteps > 0) ? maxSubSteps : m_maxSubSteps;
-        
-        numSimSteps = m_worldData.dynamicsWorld->stepSimulation(timeStep, actualMaxSubSteps, fixedTimeStep);
-
-		if (m_dumpStatsCount != 0)
-		{
-			if (--m_dumpStatsCount <= 0)
-			{
-				m_dumpStatsCount = (int)m_worldData.params->physicsLoggingFrames;
-				// DumpPhysicsStatistics2(this);
-				DumpActivationInfo2(this);
-			}
-		}
-
-		// OBJECT UPDATES =================================================================
-		// Put all of the updates this frame into m_updatesThisFrameArray
-		int updates = 0;
-		if (m_worldData.updatesThisFrame.size() > 0)
-		{
-			WorldData::UpdatesThisFrameMapType::const_iterator it = m_worldData.updatesThisFrame.begin(); 
-			for (; it != m_worldData.updatesThisFrame.end(); it++)
-			{
-				if (updates < m_maxUpdatesPerFrame) {
-					m_updatesThisFrameArray[updates] = *(it->second);
-					updates++;
-				} else {
-					m_worldData.BSLog("WARNING: Exceeded max updates per frame (%d)", m_maxUpdatesPerFrame);
-					break;
-				}
-			}
-			m_worldData.updatesThisFrame.clear();
-		}
-
-		// Update the values passed by reference into this function
-		*updatedEntityCount = updates;
-
-		*collidersCount = collisionsThisFrame;
-	}
-
-	return numSimSteps;
+    for (int i = 0; i < m_worldData.dynamicsWorld->getNumCollisionObjects(); i++) {
+        btCollisionObject* obj = m_worldData.dynamicsWorld->getCollisionObjectArray()[i];
+        if (CONVLOCALID(obj->getUserPointer()) == id) {
+            return obj;
+        }
+    }
+    return nullptr;
 }
 
+void BulletSim::registerGpuBody(uint32_t id, uint32_t gpuId) {
+    m_gpuBodyIds.push_back(id);
+}
+
+void BulletSim::registerCpuBody(uint32_t id) {
+    m_cpuBodyIds.push_back(id);
+}
+
+bool BulletSim::UpdateParameter2(IDTYPE localID, const char* parm, float val) {
+    if (strcmp(parm, "gravity") == 0) {
+        if (m_worldData.isGpuAvailable && m_worldData.gpuPipeline) {
+            // b3Vector3 gravity(0, -val, 0);  // Commented out due to constructor issues
+            // m_worldData.gpuPipeline->setGravity(gravity);
+            return true;
+        }
+    } else if (strcmp(parm, "max_substeps") == 0) {
+        m_maxSubSteps = (int)val;
+        return true;
+    } else if (strcmp(parm, "contact_impulse_threshold") == 0) {
+        m_contactImpulseThreshold = val;
+        return true;
+    }
+    return false;
+}
+
+void BulletSim::DumpPhysicsStats() {
+    // GPU-specific physics stats dumping
+}
+
+// Other necessary implementations
 void BulletSim::RecordCollision(const btCollisionObject* objA, const btCollisionObject* objB, 
 					const btVector3& contact, const btVector3& norm, const float penetration)
 {
@@ -482,8 +612,8 @@ void BulletSim::RecordCollision(const btCollisionObject* objA, const btCollision
 			CollisionDesc cDesc;
 			cDesc.aID = idA;
 			cDesc.bID = idB;
-			cDesc.point = contact;
-			cDesc.normal = contactNormal;
+			cDesc.point = btToB3Vector3(contact);
+			cDesc.normal = btToB3Vector3(contactNormal);
 			cDesc.penetration = penetration;
 			m_collidersThisFrameArray[collisionsThisFrame] = cDesc;
 			collisionsThisFrame++;
@@ -546,129 +676,470 @@ void BulletSim::RecordGhostCollisions(btPairCachingGhostObject* obj)
 	}
 }
 
+// Called when a collision point is being added to the manifold.
+// This is used to modify the collision normal to make meshes collidable on only one side.
+// Based on rule: "Ignore collisions if dot product of hit normal and a vector pointing to the center of the the object
+//     is less than zero."
+// Code based on example code given in: http://www.bulletphysics.org/Bullet/phpBB3/viewtopic.php?f=9&t=3052&start=15#p12308
+// Code used under Creative Commons, ShareAlike, Attribution as per Bullet forums.
+static void SingleSidedMeshCheck(btManifoldPoint& cp, const btCollisionObjectWrapper* colObj, int partId, int index)
+{
+        const btCollisionShape* shape = colObj->getCollisionShape();
+
+		// TODO: compound shapes don't have this proxy type.  How to get vector pointing to object middle?
+        if (shape->getShapeType() != TRIANGLE_SHAPE_PROXYTYPE) return;
+        const btTriangleShape* tshape = static_cast<const btTriangleShape*>(colObj->getCollisionShape());
+
+        btVector3 v1 = tshape->m_vertices1[0];
+        btVector3 v2 = tshape->m_vertices1[1];
+        btVector3 v3 = tshape->m_vertices1[2];
+
+		// Create a normal pointing to the center of the mesh based on the first triangle
+        btVector3 normal = (v2-v1).cross(v3-v1);
+
+		// Since the collision points are in local coordinates, create a transform for the collided
+		//    object like it was at <0, 0, 0>.
+        btTransform orient = colObj->getWorldTransform();
+        orient.setOrigin( btVector3(0.0, 0.0, 0.0) );
+
+		// Rotate that normal to world coordinates and normalize
+        normal = orient * normal;
+        normal.normalize();
+
+		// Dot the normal to the center and the collision normal to see if the collision normal is pointing in or out.
+        btScalar dot = normal.dot(cp.m_normalWorldOnB);
+        btScalar magnitude = cp.m_normalWorldOnB.length();
+        normal *= dot > 0 ? magnitude : -magnitude;
+
+        cp.m_normalWorldOnB = normal;
+}
+
+// Check the collision point and modify the collision direction normal to only point "out" of the mesh
+bool BulletSim::SingleSidedMeshCheckCallback(btManifoldPoint& cp, 
+							const btCollisionObjectWrapper* colObj0, int partId0, int index0,
+							const btCollisionObjectWrapper* colObj1, int partId1, int index1)
+{
+        SingleSidedMeshCheck(cp, colObj0, partId0, index0);
+        SingleSidedMeshCheck(cp, colObj1, partId1, index1);
+        return true;
+}
+
+RaycastHit BulletSim::RayTest(btVector3& fromBT, btVector3& toBT, short filterGroup, short filterMask)
+{
+    RaycastHit hit{};
+    hit.Fraction = 1.0f;
+
+    if (m_worldData.isGpuAvailable && m_worldData.gpuPipeline)
+    {
+        // Convert bt → b3 for GPU
+        b3Vector3 from = btToB3Vector3(fromBT);
+        b3Vector3 to   = btToB3Vector3(toBT);
+        
+        // Use GPU ray test
+        RayResult result;
+        if (gpuRayTest(from, to, &result))
+        {
+            hit.ID       = result.collisionObjectId;
+            hit.Fraction = result.hitFraction;
+            hit.Point    = result.hitPointWorld;   // b3Vector3 → Vector3 (ok)
+            hit.Normal   = result.hitNormalWorld;  // b3Vector3 → Vector3 (ok)
+        }
+    }
+    else
+    {
+        // CPU ray test (Bullet2)
+        btCollisionWorld::ClosestRayResultCallback rayCallback(fromBT, toBT);
+        rayCallback.m_collisionFilterGroup = filterGroup;
+        rayCallback.m_collisionFilterMask  = filterMask;
+
+        m_worldData.dynamicsWorld->rayTest(fromBT, toBT, rayCallback);
+
+        if (rayCallback.hasHit())
+        {
+            hit.ID       = CONVLOCALID(rayCallback.m_collisionObject->getUserPointer());
+            hit.Fraction = rayCallback.m_closestHitFraction;
+            hit.Point    = btToB3Vector3(rayCallback.m_hitPointWorld); // converted
+            hit.Normal   = btToB3Vector3(rayCallback.m_hitNormalWorld); // converted
+        }
+    }
+
+    return hit;
+}
+
+int BulletSim::registerGpuShape(btCollisionShape* shape) {
+    if (!shape || !m_worldData.gpuNarrowphase) return -1;
+
+    const int st = shape->getShapeType();
+    const btVector3 scaling = shape->getLocalScaling();
+
+    switch (st) {
+        case BOX_SHAPE_PROXYTYPE: {
+            const btBoxShape* box = static_cast<const btBoxShape*>(shape);
+            // getHalfExtentsWithMargin already includes margin; works well for hull
+            btVector3 he = box->getHalfExtentsWithMargin();
+            he = applyScaling(he, scaling);
+            auto verts = generateBoxCorners(he);
+            return registerConvex(m_worldData.gpuNarrowphase, verts);
+        }
+
+        case SPHERE_SHAPE_PROXYTYPE: {
+            const btSphereShape* sph = static_cast<const btSphereShape*>(shape);
+            float r = sph->getRadius();
+            // Scale: take average scale, or anisotropic scales will sphericalize anyway
+            float uniformScale = (scaling.x() + scaling.y() + scaling.z()) / 3.0f;
+            auto verts = generateSpherePoints(r * uniformScale);
+            return registerConvex(m_worldData.gpuNarrowphase, verts);
+        }
+
+        case CYLINDER_SHAPE_PROXYTYPE: {
+            const btCylinderShape* cyl = static_cast<const btCylinderShape*>(shape);
+            btVector3 he = cyl->getHalfExtentsWithMargin();
+            he = applyScaling(he, scaling);
+            // Cylinder aligned with Y: radius from XZ, halfHeight from Y
+            float radius = std::max(he.x(), he.z());
+            float hh = he.y();
+            auto verts = generateCylinderPoints(radius, hh);
+            return registerConvex(m_worldData.gpuNarrowphase, verts);
+        }
+
+        case CAPSULE_SHAPE_PROXYTYPE: {
+            // Approximate capsule as a convex hull of two hemispheres + cylinder ring points
+            const btCapsuleShape* cap = static_cast<const btCapsuleShape*>(shape);
+            float r = cap->getRadius();
+            float hh = cap->getHalfHeight();
+            // Apply average scaling
+            float sx = scaling.x(), sy = scaling.y(), sz = scaling.z();
+            float avg = (sx + sy + sz) / 3.0f;
+            r *= avg; hh *= sy; // assume capsule up Y
+            auto cylPts = generateCylinderPoints(r, hh);
+            auto hemi = generateSpherePoints(r, 8, 12);
+            std::vector<btVector3> verts;
+            verts.reserve(cylPts.size() + hemi.size() * 2);
+            verts.insert(verts.end(), cylPts.begin(), cylPts.end());
+            for (auto p : hemi) { p.setY(p.y() + hh); verts.push_back(p); }
+            for (auto p : hemi) { p.setY(p.y() - hh); verts.push_back(p); }
+            return registerConvex(m_worldData.gpuNarrowphase, verts);
+        }
+
+        case CONVEX_HULL_SHAPE_PROXYTYPE: {
+            const btConvexHullShape* ch = static_cast<const btConvexHullShape*>(shape);
+            auto verts = extractConvexHullPoints(ch, scaling);
+            // Ensure a proper hull (some content may be coplanar/degenerate)
+            verts = computeConvexHull(verts);
+            return registerConvex(m_worldData.gpuNarrowphase, verts);
+        }
+
+        /*case TRIANGLE_MESH_SHAPE_PROXYTYPE: {
+            // This covers OpenSim mesh/sculpt/torus when represented as triangle meshes
+            const btBvhTriangleMeshShape* tm = static_cast<const btBvhTriangleMeshShape*>(shape);
+            std::vector<float> verts; std::vector<int> indices;
+            extractFromBvhTriangleMesh(tm, verts, indices);
+			float scaling[3] = {1.0f, 1.0f, 1.0f}; // Default scaling
+            return registerConcave(m_worldData.gpuNarrowphase, verts, indices, scaling);
+        }
+
+        case GIMPACT_SHAPE_PROXYTYPE: {
+            // Often used for dynamic meshes. GPU pipeline typically expects static concave,
+            // but we register anyway for static/hybrid scenarios.
+            const btGImpactMeshShape* gm = static_cast<const btGImpactMeshShape*>(shape);
+            std::vector<float> verts; std::vector<int> indices;
+            extractFromGImpact(gm, verts, indices);
+			float scaling[3] = {1.0f, 1.0f, 1.0f}; // Default scaling
+            return registerConcave(m_worldData.gpuNarrowphase, verts, indices, scaling);
+        }*/
+
+        case COMPOUND_SHAPE_PROXYTYPE: {
+            // Pragmatic fallback: compute a single convex hull of all child geometry
+            // (fast and robust; loses holes, e.g., torus-in-compound).
+            const btCompoundShape* comp = static_cast<const btCompoundShape*>(shape);
+            std::vector<btVector3> pts;
+            gatherCompoundVertices(comp, pts);
+            auto hull = computeConvexHull(pts);
+            return registerConvex(m_worldData.gpuNarrowphase, hull);
+        }
+
+        default: {
+            // Unsupported: try to get a conservative convex hull via AABB as last resort
+            btVector3 aabbMin, aabbMax;
+            btTransform id; id.setIdentity();
+            shape->getAabb(id, aabbMin, aabbMax);
+            btVector3 he = (aabbMax - aabbMin) * btScalar(0.5);
+            auto verts = generateBoxCorners(he);
+            return registerConvex(m_worldData.gpuNarrowphase, verts);
+        }
+    }
+}
+
+void BulletSim::registerWithGpu(int collidableIndex, int id, const btTransform& startTransform)
+{
+    // Convert PACKLOCALID to int
+    int userIndex = (int)(intptr_t)PACKLOCALID(id);
+    
+    // Extract position and rotation
+    btVector3 pos = startTransform.getOrigin();
+    btQuaternion rot = startTransform.getRotation();
+
+    // Convert to float arrays
+    float pArr[3] = { pos.x(), pos.y(), pos.z() };
+    float qArr[4] = { rot.x(), rot.y(), rot.z(), rot.w() };
+
+    // Call the low-level GPU pipeline method
+    m_worldData.gpuPipeline->registerPhysicsInstance(
+        0.0f,                // static mass
+        pArr,
+        qArr,
+        collidableIndex,
+        userIndex,           // converted to int
+        true
+    );
+}
+
+float BulletSim::computeShapeVolume(const btCollisionShape* shape) {
+    if (!shape) return 0.0f;
+
+    const int st = shape->getShapeType();
+    const btVector3 scaling = shape->getLocalScaling();
+
+    switch (st) {
+        case BOX_SHAPE_PROXYTYPE: {
+            const btBoxShape* box = static_cast<const btBoxShape*>(shape);
+            btVector3 he = box->getHalfExtentsWithMargin();
+            he *= scaling;
+            return (2 * he.x()) * (2 * he.y()) * (2 * he.z());
+        }
+        case SPHERE_SHAPE_PROXYTYPE: {
+            const btSphereShape* sph = static_cast<const btSphereShape*>(shape);
+            float r = sph->getRadius();
+            float uniformScale = (scaling.x() + scaling.y() + scaling.z()) / 3.0f;
+            r *= uniformScale;
+            return (4.0f / 3.0f) * SIMD_PI * r * r * r;
+        }
+        case CYLINDER_SHAPE_PROXYTYPE: {
+            const btCylinderShape* cyl = static_cast<const btCylinderShape*>(shape);
+            btVector3 he = cyl->getHalfExtentsWithMargin();
+            he *= scaling;
+            float radius = std::max(he.x(), he.z());
+            float hh = he.y();
+            return SIMD_PI * radius * radius * (2 * hh);
+        }
+        case CAPSULE_SHAPE_PROXYTYPE: {
+            const btCapsuleShape* cap = static_cast<const btCapsuleShape*>(shape);
+            float r = cap->getRadius();
+            float hh = cap->getHalfHeight();
+            float sx = scaling.x(), sy = scaling.y(), sz = scaling.z();
+            float avg = (sx + sy + sz) / 3.0f;
+            r *= avg; hh *= sy;
+            float cylVol = SIMD_PI * r * r * (2 * hh);
+            float sphereVol = (4.0f / 3.0f) * SIMD_PI * r * r * r;
+            return cylVol + sphereVol;
+        }
+        default: {
+            // Fallback: approximate via AABB
+            btVector3 aabbMin, aabbMax;
+            btTransform id; id.setIdentity();
+            shape->getAabb(id, aabbMin, aabbMax);
+            btVector3 he = (aabbMax - aabbMin) * btScalar(0.5);
+            return (2 * he.x()) * (2 * he.y()) * (2 * he.z());
+        }
+    }
+}
+
+float BulletSim::pickDensityForShape(const btCollisionShape* shape) {
+	float gameDensityScale = 0.1f;
+    if (!shape) return 500.0f * gameDensityScale; // solid pine default
+
+    float baseDensity;
+
+    switch (shape->getShapeType()) {
+		
+		case TERRAIN_SHAPE_PROXYTYPE:
+        case STATIC_PLANE_PROXYTYPE:
+            return 0.0f;
+
+        case TRIANGLE_MESH_SHAPE_PROXYTYPE: {
+            // Large scenery mesh → density 0; else pine
+            btVector3 aabbMin, aabbMax;
+            btTransform id; id.setIdentity();
+            shape->getAabb(id, aabbMin, aabbMax);
+            btVector3 size = aabbMax - aabbMin;
+            const float LARGE_SCENERY_THRESHOLD = 50.0f; // meters
+            if (size.x() > LARGE_SCENERY_THRESHOLD ||
+                size.y() > LARGE_SCENERY_THRESHOLD ||
+                size.z() > LARGE_SCENERY_THRESHOLD) {
+                return 0.0f;
+            }
+            return 500.0f * gameDensityScale; // smaller mesh → solid pine
+        }
+        case BOX_SHAPE_PROXYTYPE:
+        case SPHERE_SHAPE_PROXYTYPE:
+        case CYLINDER_SHAPE_PROXYTYPE:
+        case CAPSULE_SHAPE_PROXYTYPE:
+        case CONE_SHAPE_PROXYTYPE:
+        case CONVEX_HULL_SHAPE_PROXYTYPE:
+        case COMPOUND_SHAPE_PROXYTYPE:
+        case GIMPACT_SHAPE_PROXYTYPE:
+        case MULTI_SPHERE_SHAPE_PROXYTYPE:
+            baseDensity = 500.0f;   // solid pine
+            break;
+			
+        default:
+            baseDensity = 500.0f;   // fallback to solid pine
+            break;
+    }
+
+    return baseDensity * gameDensityScale;
+}
+
+// As a BulletSim member, using your volume function
+float BulletSim::computeMassFromShape(const btCollisionShape* shape) {
+    const float density = pickDensityForShape(shape);
+    if (density == 0.0f) return 0.0f; // static by hint
+    const float volume  = computeShapeVolume(shape);
+    return density * volume;
+}
+
+void BulletSim::setGpuBodyLinearVelocity(uint32_t bodyId, const b3Vector3& velocity) {
+    b3RigidBodyData* body = getGpuBodyData(bodyId);
+    if (body) body->m_linVel = velocity;
+}
+
+void BulletSim::setGpuBodyAngularVelocity(uint32_t bodyId, const b3Vector3& velocity) {
+    b3RigidBodyData* body = getGpuBodyData(bodyId);
+    if (body) body->m_angVel = velocity;
+}
+
+b3RigidBodyData* BulletSim::getGpuBodyData(uint32_t bodyId) {
+    cl_mem buf = m_worldData.gpuPipeline->getBodyBuffer();
+	int numBodies = m_worldData.gpuPipeline->getNumBodies();
+
+	cl_int err = CL_SUCCESS;
+	// Map buffer to host
+	b3RigidBodyData* hostData = (b3RigidBodyData*)clEnqueueMapBuffer(
+		m_worldData.openclQueue, buf, CL_TRUE, CL_MAP_READ, 0,
+		numBodies * sizeof(b3RigidBodyData), 0, nullptr, nullptr, &err);
+
+
+	// Unmap when done
+	//clEnqueueUnmapMemObject(m_worldData.openclQueue, buf, hostData, 0, nullptr, nullptr);
+    return &hostData[bodyId];
+}
+
+bool BulletSim::gpuRayTest(const b3Vector3& from, const b3Vector3& to, RayResult* result) {
+    if (!m_worldData.isGpuAvailable || !m_worldData.gpuPipeline) return false;
+    return true;
+}
+
+// --------------------
+// OpenCL 1.2 Initialization
+// --------------------
+bool BulletSim::initOpenCL(cl_context &context, cl_device_id &device, cl_command_queue &queue)
+{
+    cl_int err;
+
+    // 1. Get platform
+    cl_uint numPlatforms = 0;
+    err = clGetPlatformIDs(0, nullptr, &numPlatforms);
+    if (err != CL_SUCCESS || numPlatforms == 0) {
+        std::cerr << "No OpenCL platforms found.\n";
+        return false;
+    }
+    std::vector<cl_platform_id> platforms(numPlatforms);
+    clGetPlatformIDs(numPlatforms, platforms.data(), nullptr);
+
+    // 2. Get GPU device
+    cl_uint numDevices = 0;
+    err = clGetDeviceIDs(platforms[0], CL_DEVICE_TYPE_GPU, 0, nullptr, &numDevices);
+    if (err != CL_SUCCESS || numDevices == 0) {
+        std::cerr << "No GPU devices found.\n";
+        return false;
+    }
+    std::vector<cl_device_id> devices(numDevices);
+    clGetDeviceIDs(platforms[0], CL_DEVICE_TYPE_GPU, numDevices, devices.data(), nullptr);
+    device = devices[0];
+
+    // 3. Create context
+    context = clCreateContext(nullptr, 1, &device, nullptr, nullptr, &err);
+    if (err != CL_SUCCESS) {
+        std::cerr << "Failed to create OpenCL context.\n";
+        return false;
+    }
+
+    // 4. Create command queue (OpenCL 1.2 style)
+    queue = clCreateCommandQueue(context, device, 0, &err);
+    if (err != CL_SUCCESS) {
+        std::cerr << "Failed to create OpenCL command queue.\n";
+        return false;
+    }
+
+    return true;
+}
+
 btCollisionShape* BulletSim::CreateMeshShape2(int indicesCount, int* indices, int verticesCount, float* vertices)
 {
-    // Validate input parameters
-    if (indicesCount <= 0 || verticesCount <= 0 || !indices || !vertices) {
-        m_worldData.BSLog("CreateMeshShape2: Invalid parameters - indicesCount=%d, verticesCount=%d", 
-                         indicesCount, verticesCount);
-        return nullptr;
-    }
-    
-    // Additional validation
-    if (indicesCount % 3 != 0) {
-        m_worldData.BSLog("CreateMeshShape2: indicesCount not divisible by 3: %d", indicesCount);
-        return nullptr;
-    }
-    
-    if (indicesCount < 0 || indicesCount > MAX_REASONABLE_INDICES) {
-        m_worldData.BSLog("CreateMeshShape2: Suspicious indicesCount: %d", indicesCount);
-        return nullptr;
-    }
-    
-    if (verticesCount < 0 || verticesCount > MAX_REASONABLE_VERTICES) {
-        m_worldData.BSLog("CreateMeshShape2: Suspicious verticesCount: %d", verticesCount);
-        return nullptr;
-    }
+	// We must copy the indices and vertices since the passed memory is released when this call returns.
+	btIndexedMesh indexedMesh;
+	int* copiedIndices = new int[indicesCount];
+	__wrap_memcpy(copiedIndices, indices, indicesCount * sizeof(int));
+	int numVertices = verticesCount * 3;
+	float* copiedVertices = new float[numVertices];
+	__wrap_memcpy(copiedVertices, vertices, numVertices * sizeof(float));
 
-    //m_worldData.BSLog("CreateMeshShape2: indicesCount=%d, verticesCount=%d, totalVertices=%d", 
-     //                indicesCount, verticesCount, verticesCount * 3);				//DEBUG DEBUG
+	indexedMesh.m_indexType = PHY_INTEGER;
+	indexedMesh.m_triangleIndexBase = (const unsigned char*)copiedIndices;
+	indexedMesh.m_triangleIndexStride = sizeof(int) * 3;
+	indexedMesh.m_numTriangles = indicesCount / 3;
+	indexedMesh.m_vertexType = PHY_FLOAT;
+	indexedMesh.m_numVertices = verticesCount;
+	indexedMesh.m_vertexBase = (const unsigned char*)copiedVertices;
+	indexedMesh.m_vertexStride = sizeof(float) * 3;
 
- // We must copy the indices and vertices since the passed memory is released when this call returns.
-    btIndexedMesh indexedMesh;
-    int* copiedIndices = new int[indicesCount];
-    __wrap_memcpy(copiedIndices, indices, indicesCount * sizeof(int));
-    int numVertices = verticesCount * 3;
-    float* copiedVertices = new float[numVertices];
-    __wrap_memcpy(copiedVertices, vertices, numVertices * sizeof(float));
+	btTriangleIndexVertexArray* vertexArray = new btTriangleIndexVertexArray();
+	vertexArray->addIndexedMesh(indexedMesh, PHY_INTEGER);
 
-    indexedMesh.m_indexType = PHY_INTEGER;
-    indexedMesh.m_triangleIndexBase = (const unsigned char*)copiedIndices;
-    indexedMesh.m_triangleIndexStride = sizeof(int) * 3;
-    indexedMesh.m_numTriangles = indicesCount / 3;
-    indexedMesh.m_vertexType = PHY_FLOAT;
-    indexedMesh.m_numVertices = verticesCount;
-    indexedMesh.m_vertexBase = (const unsigned char*)copiedVertices;
-    indexedMesh.m_vertexStride = sizeof(float) * 3;
+	bool useQuantizedAabbCompression = true;
+	bool buildBvh = true;
+	btBvhTriangleMeshShape* meshShape = new btBvhTriangleMeshShape(vertexArray, useQuantizedAabbCompression, buildBvh);
 
-    // Use the managing vertex array class
-    ManagedTriangleIndexVertexArray* vertexArray = new ManagedTriangleIndexVertexArray();
-    vertexArray->addManagedIndexedMesh(indexedMesh, copiedIndices, copiedVertices, PHY_INTEGER);
+	meshShape->setMargin(m_worldData.params->collisionMargin);
 
-    bool useQuantizedAabbCompression = true;
-    bool buildBvh = true;
-    btBvhTriangleMeshShape* meshShape = new btBvhTriangleMeshShape(vertexArray, useQuantizedAabbCompression, buildBvh);
-
-    meshShape->setMargin(m_worldData.params->collisionMargin);
-
-    return meshShape;
+	return meshShape;
 }
 
 btCollisionShape* BulletSim::CreateGImpactShape2(int indicesCount, int* indices, int verticesCount, float* vertices)
 {
-    // Validate input parameters
-    if (indicesCount <= 0 || verticesCount <= 0 || !indices || !vertices) {
-        m_worldData.BSLog("CreateGImpactShape2: Invalid parameters - indicesCount=%d, verticesCount=%d", 
-                         indicesCount, verticesCount);
-        return nullptr;
-    }
-    
-    if (indicesCount % 3 != 0) {
-        m_worldData.BSLog("CreateGImpactShape2: indicesCount not divisible by 3: %d", indicesCount);
-        return nullptr;
-    }
-    
-    if (indicesCount < 0 || indicesCount > MAX_REASONABLE_INDICES) {
-        m_worldData.BSLog("CreateGImpactShape2: Suspicious indicesCount: %d", indicesCount);
-        return nullptr;
-    }
-    
-    if (verticesCount < 0 || verticesCount > MAX_REASONABLE_VERTICES) {
-        m_worldData.BSLog("CreateGImpactShape2: Suspicious verticesCount: %d", verticesCount);
-        return nullptr;
-    }
+	// We must copy the indices and vertices since the passed memory is released when this call returns.
+	btIndexedMesh indexedMesh;
+	int* copiedIndices = new int[indicesCount];
+	__wrap_memcpy(copiedIndices, indices, indicesCount * sizeof(int));
+	int numVertices = verticesCount * 3;
+	float* copiedVertices = new float[numVertices];
+	__wrap_memcpy(copiedVertices, vertices, numVertices * sizeof(float));
 
-    //m_worldData.BSLog("CreateGImpactShape2: ind=%d, vert=%d", indicesCount, verticesCount); //DEBUG DEBUG
+	indexedMesh.m_indexType = PHY_INTEGER;
+	indexedMesh.m_triangleIndexBase = (const unsigned char*)copiedIndices;
+	indexedMesh.m_triangleIndexStride = sizeof(int) * 3;
+	indexedMesh.m_numTriangles = indicesCount / 3;
+	indexedMesh.m_vertexType = PHY_FLOAT;
+	indexedMesh.m_numVertices = verticesCount;
+	indexedMesh.m_vertexBase = (const unsigned char*)copiedVertices;
+	indexedMesh.m_vertexStride = sizeof(float) * 3;
 
-// We must copy the indices and vertices since the passed memory is released when this call returns.
-    btIndexedMesh indexedMesh;
-    int* copiedIndices = new int[indicesCount];
-    __wrap_memcpy(copiedIndices, indices, indicesCount * sizeof(int));
-    int numVertices = verticesCount * 3;
-    float* copiedVertices = new float[numVertices];
-    __wrap_memcpy(copiedVertices, vertices, numVertices * sizeof(float));
+	btTriangleIndexVertexArray* vertexArray = new btTriangleIndexVertexArray();
+	vertexArray->addIndexedMesh(indexedMesh, PHY_INTEGER);
 
-    indexedMesh.m_indexType = PHY_INTEGER;
-    indexedMesh.m_triangleIndexBase = (const unsigned char*)copiedIndices;
-    indexedMesh.m_triangleIndexStride = sizeof(int) * 3;
-    indexedMesh.m_numTriangles = indicesCount / 3;
-    indexedMesh.m_vertexType = PHY_FLOAT;
-    indexedMesh.m_numVertices = verticesCount;
-    indexedMesh.m_vertexBase = (const unsigned char*)copiedVertices;
-    indexedMesh.m_vertexStride = sizeof(float) * 3;
+	btGImpactMeshShape* meshShape = new btGImpactMeshShape(vertexArray);
+	m_worldData.BSLog("GreateGImpactShape2: ind=%d, vert=%d", indicesCount, verticesCount);
 
-    // Use the managing vertex array class
-    ManagedTriangleIndexVertexArray* vertexArray = new ManagedTriangleIndexVertexArray();
-    vertexArray->addManagedIndexedMesh(indexedMesh, copiedIndices, copiedVertices, PHY_INTEGER);
+	meshShape->setMargin(m_worldData.params->collisionMargin);
 
-    btGImpactMeshShape* meshShape = new btGImpactMeshShape(vertexArray);
+	// The gimpact shape needs some help to create its AABBs
+	meshShape->updateBound();
 
-    meshShape->setMargin(m_worldData.params->collisionMargin);
-
-    // The gimpact shape needs some help to create its AABBs
-    meshShape->updateBound();
-
-    return meshShape;
+	return meshShape;
 }
 
 btCollisionShape* BulletSim::CreateHullShape2(int hullCount, float* hulls )
 {
-	// Validate input parameters
-	if (hullCount <= 0 || hullCount > MAX_REASONABLE_HULLS || !hulls) {
-		m_worldData.BSLog("CreateHullShape2: Invalid parameters - hullCount=%d", hullCount);
-		return nullptr;
-	}
-
 	// Create a compound shape that will wrap the set of convex hulls
 	btCompoundShape* compoundShape = new btCompoundShape(false);
 
@@ -681,24 +1152,7 @@ btCollisionShape* BulletSim::CreateHullShape2(int hullCount, float* hulls )
 	int ii = 1;
 	for (int i = 0; i < hullCount; i++)
 	{
-		if (ii >= hullCount * 1000) { // Sanity check to prevent infinite loops
-			m_worldData.BSLog("CreateHullShape2: Sanity check failed - possible corrupt hull data");
-			break;
-		}
-		
 		int vertexCount = (int)hulls[ii];
-		
-		// Validate vertex count
-		if (vertexCount <= 0 || vertexCount > 1000) {
-			m_worldData.BSLog("CreateHullShape2: Invalid vertex count: %d", vertexCount);
-			continue;
-		}
-
-		// Check if we have enough data remaining
-		if (ii + 4 + vertexCount * 3 > hullCount * 1000) {
-			m_worldData.BSLog("CreateHullShape2: Insufficient data for hull %d", i);
-			break;
-		}
 
 		// Offset this child hull by its calculated centroid
 		btVector3 centroid = btVector3((btScalar)hulls[ii+1], (btScalar)hulls[ii+2], (btScalar)hulls[ii+3]);
@@ -724,220 +1178,6 @@ btCollisionShape* BulletSim::CreateHullShape2(int hullCount, float* hulls )
 
 	return compoundShape;
 }
-
-// If using Bullet' convex hull code, refer to following link for parameter setting
-// http://kmamou.blogspot.com/2011/11/hacd-parameters.html
-// Another useful reference for ConvexDecomp
-// http://www.bulletphysics.org/Bullet/phpBB3/viewtopic.php?t=7159
-
-// From a previously created mesh shape, create a convex hull using the Bullet
-//   HACD hull creation code. The created hull will go into the hull collection
-//   so remember to delete it later.
-// Returns the created collision shape or NULL if couldn't create
-btCollisionShape* BulletSim::BuildHullShapeFromMesh2(btCollisionShape* mesh, HACDParams* parms)
-{
-#if defined(USEBULLETHACD)
-	// Validate input parameters
-	if (!mesh || !parms) {
-		m_worldData.BSLog("BuildHullShapeFromMesh2: Invalid parameters");
-		return nullptr;
-	}
-
-	// Get the triangle mesh data out of the passed mesh shape
-	int shapeType = mesh->getShapeType();
-	if (shapeType != TRIANGLE_MESH_SHAPE_PROXYTYPE)
-	{
-		// If the passed shape doesn't have a triangle mesh, we cannot hullify it.
-//		m_worldData.BSLog("HACD: passed mesh not TRIANGLE_MESH_SHAPE");	// DEBUG DEBUG
-		return NULL;
-	}
-	btStridingMeshInterface* meshInfo = ((btTriangleMeshShape*)mesh)->getMeshInterface();
-	const unsigned char* vertexBase;
-	int numVerts;
-	PHY_ScalarType vertexType;
-	int vertexStride;
-	const unsigned char* indexBase;
-	int indexStride;
-	int numFaces;
-	PHY_ScalarType indicesType;
-	meshInfo->getLockedReadOnlyVertexIndexBase(&vertexBase, numVerts, vertexType, vertexStride, &indexBase, indexStride, numFaces, indicesType);
-
-	if (vertexType != PHY_FLOAT || indicesType != PHY_INTEGER)
-	{
-		// If an odd data structure, we cannot hullify
-//		m_worldData.BSLog("HACD: triangle mesh not of right types");	// DEBUG DEBUG
-		meshInfo->unLockReadOnlyVertexBase(0);
-		return NULL;
-	}
-
-	// Validate reasonable sizes
-	if (numVerts <= 0 || numVerts > MAX_REASONABLE_VERTICES || numFaces <= 0 || numFaces > MAX_REASONABLE_INDICES / 3) {
-		m_worldData.BSLog("HACD: Invalid mesh sizes - verts=%d, faces=%d", numVerts, numFaces);
-		meshInfo->unLockReadOnlyVertexBase(0);
-		return nullptr;
-	}
-
-	// Create pointers to the vertices and indices as the PHY types that they are
-	float* tVertex = (float*)vertexBase;
-	int tVertexStride = vertexStride / sizeof(float);
-	int* tIndices = (int*) indexBase;
-	int tIndicesStride = indexStride / sizeof(int);
-//	m_worldData.BSLog("HACD: nVertices=%d, nIndices=%d", numVerts, numFaces*3);	// DEBUG DEBUG
-
-	// Copy the vertices/indices into the HACD data structures
-	std::vector< HACD::Vec3<HACD::Real> > points;
-	std::vector< HACD::Vec3<long> > triangles;
-	for (int ii=0; ii < (numVerts * tVertexStride); ii += tVertexStride)
-	{
-		if (ii + 2 >= numVerts * tVertexStride) break; // Bounds check
-		HACD::Vec3<HACD::Real> vertex(tVertex[ii], tVertex[ii+1],tVertex[ii+2]);
-		points.push_back(vertex);
-	}
-	for(int ii=0; ii < (numFaces * tIndicesStride); ii += tIndicesStride ) 
-	{
-		if (ii + 2 >= numFaces * tIndicesStride) break; // Bounds check
-		HACD::Vec3<long> vertex( tIndices[ii],  tIndices[ii+1], tIndices[ii+2]);
-		triangles.push_back(vertex);
-	}
-
-	meshInfo->unLockReadOnlyVertexBase(0);
-	m_worldData.BSLog("HACD: structures copied");	// DEBUG DEBUG
-
-	// Setup HACD parameters
-	HACD::HACD myHACD;
-	myHACD.SetPoints(&points[0]);
-	myHACD.SetNPoints(points.size());
-	myHACD.SetTriangles(&triangles[0]);
-	myHACD.SetNTriangles(triangles.size());
-
-	myHACD.SetCompacityWeight((double)parms->compacityWeight);
-	myHACD.SetVolumeWeight((double)parms->volumeWeight);
-	myHACD.SetNClusters((size_t)parms->minClusters);
-	myHACD.SetNVerticesPerCH((size_t)parms->maxVerticesPerHull);
-	myHACD.SetConcavity((double)parms->concavity);
-	myHACD.SetAddExtraDistPoints(parms->addExtraDistPoints == ParamTrue ? true : false);   
-	myHACD.SetAddNeighboursDistPoints(parms->addNeighboursDistPoints == ParamTrue ? true : false);   
-	myHACD.SetAddFacesPoints(parms->addFacesPoints == ParamTrue ? true : false); 
-
-//	m_worldData.BSLog("HACD: Before compute. nPoints=%d, nTriangles=%d, minClusters=%f, maxVerts=%f", 
-//		points.size(), triangles.size(), parms->minClusters, parms->maxVerticesPerHull);	// DEBUG DEBUG
-
-	// Hullify the mesh
-	myHACD.Compute();
-	int nHulls = (int)myHACD.GetNClusters();	
-//	m_worldData.BSLog("HACD: After compute. nHulls=%d", nHulls);	// DEBUG DEBUG
-
-	// Create the compound shape all the hulls will be added to
-	btCompoundShape* compoundShape = new btCompoundShape(true);
-	compoundShape->setMargin(m_worldData.params->collisionMargin);
-
-	// Convert each of the built hulls into btConvexHullShape objects and add to the compoundShape
-	for (int hul=0; hul < nHulls; hul++)
-	{
-		size_t nPoints = myHACD.GetNPointsCH(hul);
-		size_t nTriangles = myHACD.GetNTrianglesCH(hul);
-//		m_worldData.BSLog("HACD: Add hull %d. nPoints=%d, nTriangles=%d", hul, nPoints, nTriangles);	// DEBUG DEBUG
-
-		// Get the vertices and indices for one hull
-		HACD::Vec3<HACD::Real> * pointsCH = new HACD::Vec3<HACD::Real>[nPoints];
-		HACD::Vec3<long> * trianglesCH = new HACD::Vec3<long>[nTriangles];
-		myHACD.GetCH(hul, pointsCH, trianglesCH);
-
-		// Average the location of all the vertices to create a centriod for the hull.
-		btAlignedObjectArray<btVector3> vertices;
-		btVector3 centroid;
-		centroid.setValue(0,0,0);
-		for (int ii=0; ii < (int)nTriangles; ii++)
-		{
-			long tri = trianglesCH[ii].X();
-			if (tri < 0 || tri >= (int)nPoints) continue; // Bounds check
-			btVector3 corner1(pointsCH[tri].X(), pointsCH[tri].Y(), pointsCH[tri].Z() );
-			vertices.push_back(corner1);
-			centroid += corner1;
-			tri = trianglesCH[ii].Y();
-			if (tri < 0 || tri >= (int)nPoints) continue; // Bounds check
-			btVector3 corner2(pointsCH[tri].X(), pointsCH[tri].Y(), pointsCH[tri].Z() );
-			vertices.push_back(corner2);
-			centroid += corner2;
-			tri = trianglesCH[ii].Z();
-			if (tri < 0 || tri >= (int)nPoints) continue; // Bounds check
-			btVector3 corner3(pointsCH[tri].X(), pointsCH[tri].Y(), pointsCH[tri].Z() );
-			vertices.push_back(corner3);
-			centroid += corner3;
-		}
-		centroid *= 1.f/((float)(nTriangles * 3));
-
-		for (int ii=0; ii < vertices.size(); ii++)
-		{
-			vertices[ii] -= centroid;
-		}
-
-		delete [] pointsCH;
-		delete [] trianglesCH;
-
-		btConvexHullShape* convexShape;
-		// Optionally compress the hull a little bit to account for the collision margin.
-		if (parms->shouldAdjustCollisionMargin == ParamTrue)
-		{
-			float collisionMargin = 0.01f;
-			
-			btAlignedObjectArray<btVector3> planeEquations;
-			btGeometryUtil::getPlaneEquationsFromVertices(vertices, planeEquations);
-
-			btAlignedObjectArray<btVector3> shiftedPlaneEquations;
-			for (int p=0; p<planeEquations.size(); p++)
-			{
-				btVector3 plane = planeEquations[p];
-				plane[3] += collisionMargin;
-				shiftedPlaneEquations.push_back(plane);
-			}
-			btAlignedObjectArray<btVector3> shiftedVertices;
-			btGeometryUtil::getVerticesFromPlaneEquations(shiftedPlaneEquations,shiftedVertices);
-			
-			convexShape = new btConvexHullShape(&(shiftedVertices[0].getX()),shiftedVertices.size());
-			convexShape->optimizeConvexHull();
-
-		}
-		else
-		{
-			convexShape = new btConvexHullShape(&(vertices[0].getX()),vertices.size());
-			convexShape->optimizeConvexHull();
-		}
-		convexShape->setMargin(m_worldData.params->collisionMargin);
-
-		// Add the hull shape to the compound shape
-		btTransform childTrans;
-		childTrans.setIdentity();
-		childTrans.setOrigin(centroid);
-		m_worldData.BSLog("HACD: Add child shape %d", hul);	// DEBUG DEBUG
-		compoundShape->addChildShape(childTrans, convexShape);
-	}
-
-	return compoundShape;
-#else
-	return NULL;
-#endif
-}
-
-#if defined(USEVHACD)
-// Instance that is called by VHACD to report hulling progress
-class VHACDProgressLog : public IVHACD::IUserCallback
-{
-	WorldData* m_WorldData;
-public:
-	VHACDProgressLog(WorldData* wd) {m_WorldData = wd; }
-	~VHACDProgressLog() {}
-	void Update(const double          overallProgress,
-                const double          stageProgress,
-                const double          operationProgress,
-                const char * const    stage,
-                const char * const    operation) 
-	 {
-		 m_WorldData->BSLog("VHACD: progress=%f, stageProg=%f, opProgress=%f, state=%s, op=%s",
-			 overallProgress, stageProgress, operationProgress, stage, operation);
-	 }
-};
-#endif
 
 btCollisionShape* BulletSim::BuildVHACDHullShapeFromMesh2(btCollisionShape* mesh, HACDParams* parms)
 {
@@ -1139,16 +1379,204 @@ btCollisionShape* BulletSim::BuildVHACDHullShapeFromMesh2(btCollisionShape* mesh
 #endif
 }
 
+// If using Bullet' convex hull code, refer to following link for parameter setting
+// http://kmamou.blogspot.com/2011/11/hacd-parameters.html
+// Another useful reference for ConvexDecomp
+// http://www.bulletphysics.org/Bullet/phpBB3/viewtopic.php?t=7159
+
+// From a previously created mesh shape, create a convex hull using the Bullet
+//   HACD hull creation code. The created hull will go into the hull collection
+//   so remember to delete it later.
+// Returns the created collision shape or NULL if couldn't create
+btCollisionShape* BulletSim::BuildHullShapeFromMesh2(btCollisionShape* mesh, HACDParams* parms)
+{
+#if defined(USEBULLETHACD)
+	// Validate input parameters
+	if (!mesh || !parms) {
+		m_worldData.BSLog("BuildHullShapeFromMesh2: Invalid parameters");
+		return nullptr;
+	}
+
+	// Get the triangle mesh data out of the passed mesh shape
+	int shapeType = mesh->getShapeType();
+	if (shapeType != TRIANGLE_MESH_SHAPE_PROXYTYPE)
+	{
+		// If the passed shape doesn't have a triangle mesh, we cannot hullify it.
+//		m_worldData.BSLog("HACD: passed mesh not TRIANGLE_MESH_SHAPE");	// DEBUG DEBUG
+		return NULL;
+	}
+	btStridingMeshInterface* meshInfo = ((btTriangleMeshShape*)mesh)->getMeshInterface();
+	const unsigned char* vertexBase;
+	int numVerts;
+	PHY_ScalarType vertexType;
+	int vertexStride;
+	const unsigned char* indexBase;
+	int indexStride;
+	int numFaces;
+	PHY_ScalarType indicesType;
+	meshInfo->getLockedReadOnlyVertexIndexBase(&vertexBase, numVerts, vertexType, vertexStride, &indexBase, indexStride, numFaces, indicesType);
+
+	if (vertexType != PHY_FLOAT || indicesType != PHY_INTEGER)
+	{
+		// If an odd data structure, we cannot hullify
+//		m_worldData.BSLog("HACD: triangle mesh not of right types");	// DEBUG DEBUG
+		meshInfo->unLockReadOnlyVertexBase(0);
+		return NULL;
+	}
+
+	// Validate reasonable sizes
+	if (numVerts <= 0 || numVerts > MAX_REASONABLE_VERTICES || numFaces <= 0 || numFaces > MAX_REASONABLE_INDICES / 3) {
+		m_worldData.BSLog("HACD: Invalid mesh sizes - verts=%d, faces=%d", numVerts, numFaces);
+		meshInfo->unLockReadOnlyVertexBase(0);
+		return nullptr;
+	}
+
+	// Create pointers to the vertices and indices as the PHY types that they are
+	float* tVertex = (float*)vertexBase;
+	int tVertexStride = vertexStride / sizeof(float);
+	int* tIndices = (int*) indexBase;
+	int tIndicesStride = indexStride / sizeof(int);
+//	m_worldData.BSLog("HACD: nVertices=%d, nIndices=%d", numVerts, numFaces*3);	// DEBUG DEBUG
+
+	// Copy the vertices/indices into the HACD data structures
+	std::vector< HACD::Vec3<HACD::Real> > points;
+	std::vector< HACD::Vec3<long> > triangles;
+	for (int ii=0; ii < (numVerts * tVertexStride); ii += tVertexStride)
+	{
+		if (ii + 2 >= numVerts * tVertexStride) break; // Bounds check
+		HACD::Vec3<HACD::Real> vertex(tVertex[ii], tVertex[ii+1],tVertex[ii+2]);
+		points.push_back(vertex);
+	}
+	for(int ii=0; ii < (numFaces * tIndicesStride); ii += tIndicesStride ) 
+	{
+		if (ii + 2 >= numFaces * tIndicesStride) break; // Bounds check
+		HACD::Vec3<long> vertex( tIndices[ii],  tIndices[ii+1], tIndices[ii+2]);
+		triangles.push_back(vertex);
+	}
+
+	meshInfo->unLockReadOnlyVertexBase(0);
+	m_worldData.BSLog("HACD: structures copied");	// DEBUG DEBUG
+
+	// Setup HACD parameters
+	HACD::HACD myHACD;
+	myHACD.SetPoints(&points[0]);
+	myHACD.SetNPoints(points.size());
+	myHACD.SetTriangles(&triangles[0]);
+	myHACD.SetNTriangles(triangles.size());
+
+	myHACD.SetCompacityWeight((double)parms->compacityWeight);
+	myHACD.SetVolumeWeight((double)parms->volumeWeight);
+	myHACD.SetNClusters((size_t)parms->minClusters);
+	myHACD.SetNVerticesPerCH((size_t)parms->maxVerticesPerHull);
+	myHACD.SetConcavity((double)parms->concavity);
+	myHACD.SetAddExtraDistPoints(parms->addExtraDistPoints == ParamTrue ? true : false);   
+	myHACD.SetAddNeighboursDistPoints(parms->addNeighboursDistPoints == ParamTrue ? true : false);   
+	myHACD.SetAddFacesPoints(parms->addFacesPoints == ParamTrue ? true : false); 
+
+//	m_worldData.BSLog("HACD: Before compute. nPoints=%d, nTriangles=%d, minClusters=%f, maxVerts=%f", 
+//		points.size(), triangles.size(), parms->minClusters, parms->maxVerticesPerHull);	// DEBUG DEBUG
+
+	// Hullify the mesh
+	myHACD.Compute();
+	int nHulls = (int)myHACD.GetNClusters();	
+//	m_worldData.BSLog("HACD: After compute. nHulls=%d", nHulls);	// DEBUG DEBUG
+
+	// Create the compound shape all the hulls will be added to
+	btCompoundShape* compoundShape = new btCompoundShape(true);
+	compoundShape->setMargin(m_worldData.params->collisionMargin);
+
+	// Convert each of the built hulls into btConvexHullShape objects and add to the compoundShape
+	for (int hul=0; hul < nHulls; hul++)
+	{
+		size_t nPoints = myHACD.GetNPointsCH(hul);
+		size_t nTriangles = myHACD.GetNTrianglesCH(hul);
+//		m_worldData.BSLog("HACD: Add hull %d. nPoints=%d, nTriangles=%d", hul, nPoints, nTriangles);	// DEBUG DEBUG
+
+		// Get the vertices and indices for one hull
+		HACD::Vec3<HACD::Real> * pointsCH = new HACD::Vec3<HACD::Real>[nPoints];
+		HACD::Vec3<long> * trianglesCH = new HACD::Vec3<long>[nTriangles];
+		myHACD.GetCH(hul, pointsCH, trianglesCH);
+
+		// Average the location of all the vertices to create a centriod for the hull.
+		btAlignedObjectArray<btVector3> vertices;
+		btVector3 centroid;
+		centroid.setValue(0,0,0);
+		for (int ii=0; ii < (int)nTriangles; ii++)
+		{
+			long tri = trianglesCH[ii].X();
+			if (tri < 0 || tri >= (int)nPoints) continue; // Bounds check
+			btVector3 corner1(pointsCH[tri].X(), pointsCH[tri].Y(), pointsCH[tri].Z() );
+			vertices.push_back(corner1);
+			centroid += corner1;
+			tri = trianglesCH[ii].Y();
+			if (tri < 0 || tri >= (int)nPoints) continue; // Bounds check
+			btVector3 corner2(pointsCH[tri].X(), pointsCH[tri].Y(), pointsCH[tri].Z() );
+			vertices.push_back(corner2);
+			centroid += corner2;
+			tri = trianglesCH[ii].Z();
+			if (tri < 0 || tri >= (int)nPoints) continue; // Bounds check
+			btVector3 corner3(pointsCH[tri].X(), pointsCH[tri].Y(), pointsCH[tri].Z() );
+			vertices.push_back(corner3);
+			centroid += corner3;
+		}
+		centroid *= 1.f/((float)(nTriangles * 3));
+
+		for (int ii=0; ii < vertices.size(); ii++)
+		{
+			vertices[ii] -= centroid;
+		}
+
+		delete [] pointsCH;
+		delete [] trianglesCH;
+
+		btConvexHullShape* convexShape;
+		// Optionally compress the hull a little bit to account for the collision margin.
+		if (parms->shouldAdjustCollisionMargin == ParamTrue)
+		{
+			float collisionMargin = 0.01f;
+			
+			btAlignedObjectArray<btVector3> planeEquations;
+			btGeometryUtil::getPlaneEquationsFromVertices(vertices, planeEquations);
+
+			btAlignedObjectArray<btVector3> shiftedPlaneEquations;
+			for (int p=0; p<planeEquations.size(); p++)
+			{
+				btVector3 plane = planeEquations[p];
+				plane[3] += collisionMargin;
+				shiftedPlaneEquations.push_back(plane);
+			}
+			btAlignedObjectArray<btVector3> shiftedVertices;
+			btGeometryUtil::getVerticesFromPlaneEquations(shiftedPlaneEquations,shiftedVertices);
+			
+			convexShape = new btConvexHullShape(&(shiftedVertices[0].getX()),shiftedVertices.size());
+			convexShape->optimizeConvexHull();
+
+		}
+		else
+		{
+			convexShape = new btConvexHullShape(&(vertices[0].getX()),vertices.size());
+			convexShape->optimizeConvexHull();
+		}
+		convexShape->setMargin(m_worldData.params->collisionMargin);
+
+		// Add the hull shape to the compound shape
+		btTransform childTrans;
+		childTrans.setIdentity();
+		childTrans.setOrigin(centroid);
+		m_worldData.BSLog("HACD: Add child shape %d", hul);	// DEBUG DEBUG
+		compoundShape->addChildShape(childTrans, convexShape);
+	}
+
+	return compoundShape;
+#else
+	return NULL;
+#endif
+}
+
 // Return a btConvexHullShape constructed from the passed btCollisonShape.
 // Used to create the separate hulls if using the C# HACD algorithm.
 btCollisionShape* BulletSim::BuildConvexHullShapeFromMesh2(btCollisionShape* mesh)
 {
-	// Validate input parameters
-	if (!mesh) {
-		m_worldData.BSLog("BuildConvexHullShapeFromMesh2: Invalid parameters");
-		return nullptr;
-	}
-
 	btConvexHullShape* hullShape = new btConvexHullShape();
 
 	// Get the triangle mesh data out of the passed mesh shape
@@ -1170,18 +1598,10 @@ btCollisionShape* BulletSim::BuildConvexHullShapeFromMesh2(btCollisionShape* mes
 	PHY_ScalarType indicesType;
 	meshInfo->getLockedReadOnlyVertexIndexBase(&vertexBase, numVerts, vertexType, vertexStride, &indexBase, indexStride, numFaces, indicesType);
 
-	// Validate reasonable sizes
-	if (numVerts <= 0 || numVerts > MAX_REASONABLE_VERTICES || numFaces <= 0 || numFaces > MAX_REASONABLE_INDICES / 3) {
-		m_worldData.BSLog("BuildConvexHullShapeFromMesh2: Invalid mesh sizes - verts=%d, faces=%d", numVerts, numFaces);
-		meshInfo->unLockReadOnlyVertexBase(0);
-		return nullptr;
-	}
-
 	if (vertexType != PHY_FLOAT || indicesType != PHY_INTEGER)
 	{
 		// If an odd data structure, we cannot hullify
 		m_worldData.BSLog("BuildConvexHullShapeFromMesh2: triangle mesh not of right types");	// DEBUG DEBUG
-		meshInfo->unLockReadOnlyVertexBase(0);
 		return NULL;
 	}
 
@@ -1195,20 +1615,15 @@ btCollisionShape* BulletSim::BuildConvexHullShapeFromMesh2(btCollisionShape* mes
 	// Add points to the hull shape
 	for(int ii=0; ii < (numFaces * tIndicesStride); ii += tIndicesStride ) 
 	{
-		if (ii + 2 >= numFaces * tIndicesStride) break; // Bounds check
-		
 		int point1Index = tIndices[ii + 0] * tVertexStride;
-		if (point1Index + 2 >= numVerts * tVertexStride) continue; // Bounds check
 		btVector3 point1 = btVector3(tVertex[point1Index + 0], tVertex[point1Index + 1], tVertex[point1Index + 2] );
 		hullShape->addPoint(point1);
 
 		int point2Index = tIndices[ii + 1] * tVertexStride;
-		if (point2Index + 2 >= numVerts * tVertexStride) continue; // Bounds check
 		btVector3 point2 = btVector3(tVertex[point2Index + 0], tVertex[point2Index + 1], tVertex[point2Index + 2] );
 		hullShape->addPoint(point2);
 
 		int point3Index = tIndices[ii + 2] * tVertexStride;
-		if (point3Index + 2 >= numVerts * tVertexStride) continue; // Bounds check
 		btVector3 point3 = btVector3(tVertex[point3Index + 0], tVertex[point3Index + 1], tVertex[point3Index + 2] );
 		hullShape->addPoint(point3);
 	}
@@ -1220,46 +1635,19 @@ btCollisionShape* BulletSim::BuildConvexHullShapeFromMesh2(btCollisionShape* mes
 
 btCollisionShape* BulletSim::CreateConvexHullShape2(int indicesCount, int* indices, int verticesCount, float* vertices)
 {
-	// Validate input parameters
-	if (indicesCount <= 0 || verticesCount <= 0 || !indices || !vertices) {
-		m_worldData.BSLog("CreateConvexHullShape2: Invalid parameters - indicesCount=%d, verticesCount=%d", 
-						 indicesCount, verticesCount);
-		return nullptr;
-	}
-	
-	if (indicesCount % 3 != 0) {
-		m_worldData.BSLog("CreateConvexHullShape2: indicesCount not divisible by 3: %d", indicesCount);
-		return nullptr;
-	}
-	
-	if (indicesCount < 0 || indicesCount > MAX_REASONABLE_INDICES) {
-		m_worldData.BSLog("CreateConvexHullShape2: Suspicious indicesCount: %d", indicesCount);
-		return nullptr;
-	}
-	
-	if (verticesCount < 0 || verticesCount > MAX_REASONABLE_VERTICES) {
-		m_worldData.BSLog("CreateConvexHullShape2: Suspicious verticesCount: %d", verticesCount);
-		return nullptr;
-	}
-
 	btConvexHullShape* hullShape = new btConvexHullShape();
 
 	for (int ii = 0; ii < indicesCount; ii += 3)
 	{
-		if (ii + 2 >= indicesCount) break; // Bounds check
-		
 		int point1Index = indices[ii + 0] * 3;
-		if (point1Index + 2 >= verticesCount * 3) continue; // Bounds check
 		btVector3 point1 = btVector3(vertices[point1Index + 0], vertices[point1Index + 1], vertices[point1Index + 2] );
 		hullShape->addPoint(point1);
 
 		int point2Index = indices[ii + 1] * 3;
-		if (point2Index + 2 >= verticesCount * 3) continue; // Bounds check
 		btVector3 point2 = btVector3(vertices[point2Index + 0], vertices[point2Index + 1], vertices[point2Index + 2] );
 		hullShape->addPoint(point2);
 
 		int point3Index = indices[ii + 2] * 3;
-		if (point3Index + 2 >= verticesCount * 3) continue; // Bounds check
 		btVector3 point3 = btVector3(vertices[point3Index + 0], vertices[point3Index + 1], vertices[point3Index + 2] );
 		hullShape->addPoint(point3);
 
@@ -1333,25 +1721,6 @@ SweepHit BulletSim::ConvexSweepTest(btCollisionShape* shape, btVector3& fromPos,
 	*/
 }
 
-RaycastHit BulletSim::RayTest(btVector3& from, btVector3& to, short filterGroup, short filterMask)
-{
-	RaycastHit hit;
-	btCollisionWorld::ClosestRayResultCallback hitResult(from, to);
-	hitResult.m_collisionFilterGroup = filterGroup;
-	hitResult.m_collisionFilterMask = filterMask;
-
-	m_worldData.dynamicsWorld->rayTest(from, to, hitResult);
-	if (hitResult.hasHit())
-	{
-		hit.ID = CONVLOCALID(hitResult.m_collisionObject->getUserPointer());
-		hit.Fraction = hitResult.m_closestHitFraction;
-		hit.Normal = hitResult.m_hitNormalWorld;
-		hit.Point = hitResult.m_hitPointWorld;
-	}
-
-	return hit;
-}
-
 // TODO: get this code working
 const btVector3 BulletSim::RecoverFromPenetration(IDTYPE id)
 {
@@ -1369,40 +1738,6 @@ const btVector3 BulletSim::RecoverFromPenetration(IDTYPE id)
 	}
 	*/
 	return btVector3(0.0, 0.0, 0.0);
-}
-
-bool BulletSim::UpdateParameter2(IDTYPE localID, const char* parm, float val)
-{
-	btScalar btVal = btScalar(val);
-	btVector3 btZeroVector3 = btVector3(0, 0, 0);
-
-	// changes to the environment
-	if (strcmp(parm, "gravity") == 0)
-	{
-		m_worldData.dynamicsWorld->setGravity(btVector3(0.f, 0.f, val));
-		return true;
-	}
-	//increase sub-step resolution and filter by contact impulse
-	else if (strcmp(parm, "max_substeps") == 0)
-    {
-        m_maxSubSteps = (int)val;
-        return true;
-    }
-    else if (strcmp(parm, "contact_impulse_threshold") == 0)
-    {
-        m_contactImpulseThreshold = val;
-        return true;
-    }
-	return false;
-}
-
-// #include "LinearMath/btQuickprof.h"
-// Call Bullet to dump its performance stats
-// Bullet must be patched to make this work. See BulletDetailLogging.patch
-void BulletSim::DumpPhysicsStats()
-{
-	// CProfileManager::dumpAll();
-	return;
 }
 
 #ifdef _WIN32

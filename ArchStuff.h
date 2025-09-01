@@ -28,7 +28,6 @@
 
 #ifndef ARCH_STUFF_H
 #define ARCH_STUFF_H
-
 // 20230107 RA: This file exists to create definitions for 32 vs 64 bit
 //    architectures. Since we're moving into the future, 32bit is old
 //    and is no longer a supported machine architecture.

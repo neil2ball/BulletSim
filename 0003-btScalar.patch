@@ -1,0 +1,24 @@
+--- bullet3/src/LinearMath/btScalar.h	2025-08-30 07:29:41.000000000 +0000
++++ bullet3/src/LinearMath/btScalar.h.new	2025-08-30 09:59:35.843430816 +0000
+@@ -306,16 +306,13 @@
+ 
+ 
+ ///The btScalar type abstracts floating point numbers, to easily switch between double and single floating point precision.
+-#if defined(BT_USE_DOUBLE_PRECISION)
+-	typedef double btScalar;
+-	//this number could be bigger in double precision
+-	#define BT_LARGE_FLOAT 1e30
+-#else
++	#undef btScalar
+ 	typedef float btScalar;
+-	//keep BT_LARGE_FLOAT*BT_LARGE_FLOAT < FLT_MAX
+-	#define BT_LARGE_FLOAT 1e18f
+-#endif
+ 
++	#ifndef BT_LARGE_FLOAT
++	#define BT_LARGE_FLOAT 1e18f
++	#endif
++	
+ #ifdef BT_USE_SSE
+ 	typedef __m128 btSimdFloat4;
+ #endif  //BT_USE_SSE

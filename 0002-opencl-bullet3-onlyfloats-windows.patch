@@ -1,0 +1,15 @@
+--- bullet3/CMakeLists.txt	2025-08-30 10:58:36.753935282 +0000
++++ bullet3/CMakeLists.txt.new	2025-08-30 10:58:41.398876361 +0000
+@@ -1,4 +1,12 @@
+ cmake_minimum_required(VERSION 3.5)
++
++set(OPENCL_FOUND TRUE)
++set(OPENCL_INCLUDE_DIR "C:/OpenCL-SDK/include/CL")
++set(OPENCL_LIBRARY "C:/OpenCL-SDK/lib/OpenCL.lib")
++set(USE_DOUBLE_PRECISION OFF CACHE BOOL "Use double precision" FORCE)
++set(USE_OPENCL ON CACHE BOOL "" FORCE)
++set(BUILD_BULLET3 ON CACHE BOOL "" FORCE)
++
+ set(CMAKE_ALLOW_LOOSE_LOOP_CONSTRUCTS true)
+ cmake_policy(SET CMP0017 NEW)
+ #this line has to appear before 'PROJECT' in order to be able to disable incremental linking

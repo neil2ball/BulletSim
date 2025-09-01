@@ -22,18 +22,52 @@
  * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
  * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- */
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE */
+#include <clew/clew.h> 
+#include <CL/cl.h>
+#ifndef CL_PLATFORM_NOT_FOUND_KHR
+#define CL_PLATFORM_NOT_FOUND_KHR -1001
+#endif
+#include <iostream>
+#include <vector>
+#include <string>
+#include <cstdio>
 
+// Include Bullet3 headers here to isolate them
+#include "Bullet3OpenCL/Initialize/b3OpenCLUtils.h"
+#include "Bullet3OpenCL/BroadphaseCollision/b3GpuBroadphaseInterface.h"
+#include "Bullet3OpenCL/RigidBody/b3GpuNarrowPhase.h"
+
+#include "Bullet3OpenCL/RigidBody/b3GpuRigidBodyPipeline.h"
+#include "Bullet3Collision/NarrowPhaseCollision/b3Config.h"
+
+#define CL_TARGET_OPENCL_VERSION 120
 #include "BulletSim.h"
+#include "ShapeData.h"
 #include "Util.h"
 #include <stdarg.h>
 
+#include "Bullet3Common/b3Vector3.h"
+#include "Bullet3Common/b3Quaternion.h"
+#include "Bullet3Common/b3Transform.h"
+
+#include "Bullet3OpenCL/RigidBody/b3GpuRigidBodyPipeline.h"
+#include "Bullet3Collision/NarrowPhaseCollision/shared/b3Collidable.h"
+
+#include "Bullet3Collision/BroadPhaseCollision/b3DynamicBvhBroadphase.h"
+#include "Bullet3Collision/BroadPhaseCollision/b3OverlappingPairCache.h"
+
+#include <BulletCollision/CollisionShapes/btCollisionShape.h>
+#include <BulletCollision/CollisionDispatch/btCollisionObject.h>
+#include "BulletDynamics/Dynamics/btRigidBody.h"
+
+#include <BulletCollision/CollisionShapes/btHeightfieldTerrainShape.h>
+
 #include "BulletCollision/CollisionDispatch/btSimulationIslandManager.h"
-#include "BulletCollision/CollisionShapes/btHeightfieldTerrainShape.h"
-#include "BulletCollision/BroadphaseCollision/btBroadphaseProxy.h"
+
 
 #include <map>
+#include <cstdint>
 
 #if defined(_WIN32) || defined(_WIN64)
     #define DLL_EXPORT __declspec( dllexport )
@@ -49,12 +83,20 @@
     #define EXTERN_C extern
 #endif
 
+#ifndef PHYS_LOG
+    #include <cstdio>
+    #define PHYS_LOG(fmt, ...) do { std::printf("[PHYS] " fmt "\n", ##__VA_ARGS__); } while (0)
+#endif
+
 EXTERN_C DLL_EXPORT void DumpConstraint2(BulletSim* sim, btTypedConstraint* constrain);
 
 #pragma warning( disable: 4190 ) // Warning about returning Vector3 that we can safely ignore
 
 // The minimum thickness for terrain. If less than this, we correct
 #define TERRAIN_MIN_THICKNESS (0.2)
+
+// Verbose physics logging toggle
+static bool gVerbosePhysics = true; // set false to silence
 
 /**
  * Returns a pointer to a string that identifies the version of the BulletSim.dll
@@ -78,6 +120,7 @@ static void InitCheckOverlappingPairs(BulletSim* pSim)
 	staticSim = pSim;
 	lastNumberOverlappingPairs = staticSim->getDynamicsWorld()->getPairCache()->getNumOverlappingPairs();
 }
+
 static void CheckOverlappingPairs(char* pReason)
 {
 	int thisOverlapping = staticSim->getDynamicsWorld()->getPairCache()->getNumOverlappingPairs();
@@ -159,18 +202,203 @@ btCollisionShape* CreateInnerShape(btCollisionShape* outerShape, float scaleFact
  * @return pointer to the created simulator
  */
 EXTERN_C DLL_EXPORT BulletSim* Initialize2(Vector3 maxPosition, ParamBlock* parms,
-											int maxCollisions, CollisionDesc* collisionArray,
-											int maxUpdates, EntityProperties* updateArray,
-											DebugLogCallback* debugLog)
+                                           int maxCollisions, CollisionDesc* collisionArray,
+                                           int maxUpdates, EntityProperties* updateArray,
+                                           DebugLogCallback* debugLog)
 {
-	bsDebug_Initialize();
+    auto log = [&](const char* msg) {
+        if (debugLog) debugLog(msg);
+        else { printf("%s\n", msg); fflush(stdout); }
+    };
 
-	BulletSim* sim = new BulletSim(maxPosition.X, maxPosition.Y, maxPosition.Z);
-	sim->getWorldData()->debugLogCallback = debugLog;
-	sim->initPhysics2(parms, maxCollisions, collisionArray, maxUpdates, updateArray);
+    log("Initialize2: starting");
+    bsDebug_Initialize();
+    log("Initialize2: bsDebug_Initialize done");
 
-	return sim;
+    // Log incoming parameters before doing anything else
+    {
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+                 "maxPosition: %.3f, %.3f, %.3f | parms=%p | collisionArray=%p | updateArray=%p",
+                 maxPosition.X, maxPosition.Y, maxPosition.Z,
+                 (void*)parms, (void*)collisionArray, (void*)updateArray);
+        log(buf);
+    }
+    {
+        char buf[128];
+        snprintf(buf, sizeof(buf),
+                 "maxCollisions=%d | maxUpdates=%d",
+                 maxCollisions, maxUpdates);
+        log(buf);
+    }
+
+    log("Initialize2: about to create BulletSim instance");
+    BulletSim* sim = new BulletSim(maxPosition.X, maxPosition.Y, maxPosition.Z);
+	staticSim = sim;
+    log("Initialize2: BulletSim constructor returned");
+
+    if (!sim) {
+        log("ERROR: BulletSim* is NULL after new — aborting");
+        return nullptr;
+    }
+
+    // Check worldData pointer before dereferencing
+    WorldData* wd = sim->getWorldData();
+    if (!wd) {
+        log("ERROR: getWorldData() returned NULL — aborting");
+        delete sim;
+        return nullptr;
+    }
+
+    log("Initialize2: worldData pointer is valid");
+    wd->debugLogCallback = debugLog;
+    log("Initialize2: debugLogCallback set");
+
+    // --- Enumerate OpenCL platforms with detailed logging ---
+    log("Initialize2: enumerating OpenCL platforms (detailed)");
+
+    if (!clGetPlatformIDs) {
+        log("ERROR: clGetPlatformIDs symbol is NULL — OpenCL.dll may not be loaded");
+        wd->isGpuAvailable = false;
+        sim->initPhysics2(parms, maxCollisions, collisionArray, maxUpdates, updateArray);
+        return sim;
+    }
+
+    cl_uint numPlatforms = 0;
+    cl_int err = clGetPlatformIDs(0, nullptr, &numPlatforms);
+
+    {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "clGetPlatformIDs returned %d, numPlatforms=%u", err, numPlatforms);
+        log(buf);
+    }
+
+    if (err != CL_SUCCESS || numPlatforms == 0) {
+        if (err == CL_PLATFORM_NOT_FOUND_KHR) log("No OpenCL platforms found (CL_PLATFORM_NOT_FOUND_KHR)");
+        else if (err == CL_INVALID_VALUE)     log("ERROR: CL_INVALID_VALUE from clGetPlatformIDs");
+        else {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "ERROR: Unknown clGetPlatformIDs error code %d", err);
+            log(buf);
+        }
+        wd->isGpuAvailable = false;
+        sim->initPhysics2(parms, maxCollisions, collisionArray, maxUpdates, updateArray);
+        return sim;
+    }
+
+    std::vector<cl_platform_id> platforms(numPlatforms);
+    err = clGetPlatformIDs(numPlatforms, platforms.data(), nullptr);
+    if (err != CL_SUCCESS) {
+        log("ERROR: clGetPlatformIDs failed when fetching platform IDs");
+        wd->isGpuAvailable = false;
+        sim->initPhysics2(parms, maxCollisions, collisionArray, maxUpdates, updateArray);
+        return sim;
+    }
+
+    for (cl_uint i = 0; i < numPlatforms; ++i) {
+        char name[128] = {0};
+        char vendor[128] = {0};
+        clGetPlatformInfo(platforms[i], CL_PLATFORM_NAME, sizeof(name), name, nullptr);
+        clGetPlatformInfo(platforms[i], CL_PLATFORM_VENDOR, sizeof(vendor), vendor, nullptr);
+
+        char buf[300];
+        snprintf(buf, sizeof(buf), "Platform %u: Name='%s', Vendor='%s'", i, name, vendor);
+        log(buf);
+    }
+
+    cl_device_id chosenDevice = nullptr;
+    cl_platform_id chosenPlatform = nullptr;
+
+    // Prefer GPU, fallback to CPU
+    for (auto plat : platforms) {
+        cl_uint numDevices = 0;
+        if (clGetDeviceIDs(plat, CL_DEVICE_TYPE_GPU, 0, nullptr, &numDevices) == CL_SUCCESS && numDevices > 0) {
+            std::vector<cl_device_id> devices(numDevices);
+            clGetDeviceIDs(plat, CL_DEVICE_TYPE_GPU, numDevices, devices.data(), nullptr);
+            chosenDevice = devices[0];
+            chosenPlatform = plat;
+            break;
+        }
+    }
+    if (!chosenDevice) {
+        for (auto plat : platforms) {
+            cl_uint numDevices = 0;
+            if (clGetDeviceIDs(plat, CL_DEVICE_TYPE_CPU, 0, nullptr, &numDevices) == CL_SUCCESS && numDevices > 0) {
+                std::vector<cl_device_id> devices(numDevices);
+                clGetDeviceIDs(plat, CL_DEVICE_TYPE_CPU, numDevices, devices.data(), nullptr);
+                chosenDevice = devices[0];
+                chosenPlatform = plat;
+                break;
+            }
+        }
+    }
+
+    if (!chosenDevice) {
+        log("No suitable OpenCL device found — running CPU physics only");
+        wd->isGpuAvailable = false;
+        sim->initPhysics2(parms, maxCollisions, collisionArray, maxUpdates, updateArray);
+        return sim;
+    }
+
+    // Log chosen platform/device
+    char platformName[128] = {0};
+    clGetPlatformInfo(chosenPlatform, CL_PLATFORM_NAME, sizeof(platformName), platformName, nullptr);
+    char deviceName[128] = {0};
+    clGetDeviceInfo(chosenDevice, CL_DEVICE_NAME, sizeof(deviceName), deviceName, nullptr);
+
+    {
+        char buf[300];
+        snprintf(buf, sizeof(buf), "Chosen OpenCL platform: %s, device: %s", platformName, deviceName);
+        log(buf);
+    }
+
+    // Create context and queue
+    cl_int clErr;
+    cl_context context = clCreateContext(nullptr, 1, &chosenDevice, nullptr, nullptr, &clErr);
+    if (clErr != CL_SUCCESS) {
+        log("Failed to create OpenCL context — running CPU physics only");
+        wd->isGpuAvailable = false;
+        sim->initPhysics2(parms, maxCollisions, collisionArray, maxUpdates, updateArray);
+        return sim;
+    }
+
+#if CL_TARGET_OPENCL_VERSION >= 200
+    cl_command_queue queue = clCreateCommandQueueWithProperties(context, chosenDevice, 0, &clErr);
+#else
+    cl_command_queue queue = clCreateCommandQueue(context, chosenDevice, 0, &clErr);
+#endif
+    if (clErr != CL_SUCCESS) {
+        log("Failed to create OpenCL command queue — running CPU physics only");
+        clReleaseContext(context);
+        wd->isGpuAvailable = false;
+        sim->initPhysics2(parms, maxCollisions, collisionArray, maxUpdates, updateArray);
+        return sim;
+    }
+
+    // Store in world data
+    wd->openclContext = context;
+    wd->openclDevice  = chosenDevice;
+    wd->openclQueue   = queue;
+    log("Initialize2: OpenCL context/device/queue stored in worldData");
+
+    // Call initOpenCL now that handles are valid
+    bool gpuAvailable = sim->initOpenCL(context, chosenDevice, queue);
+    wd->isGpuAvailable = gpuAvailable;
+
+    if (!gpuAvailable) {
+        log("initOpenCL reported failure — running CPU physics only");
+    } else {
+        log("initOpenCL succeeded — GPU physics enabled");
+    }
+
+    // Initialize physics (CPU or GPU depending on above)
+    log("Initialize2: calling initPhysics2");
+    sim->initPhysics2(parms, maxCollisions, collisionArray, maxUpdates, updateArray);
+    log("Initialize2: initPhysics2 complete");
+
+    return sim;
 }
+
 
 /**
  * Update the internal value of a parameter. Some parameters require changing world state.
@@ -190,20 +418,148 @@ EXTERN_C DLL_EXPORT bool UpdateParameter2(BulletSim* sim, unsigned int localID, 
  */
 EXTERN_C DLL_EXPORT void Shutdown2(BulletSim* sim)
 {
-	sim->exitPhysics2();
-	bsDebug_AllDone();
-	delete sim;
+    printf("[Shutdown2] START sim=%p\n", (void*)sim);
+
+    if (!sim) {
+        printf("[Shutdown2] WARNING: sim is null. Nothing to do.\n");
+        return;
+    }
+
+    // --- GPU CLEANUP ---
+    if (sim->getWorldData()->isGpuAvailable) {
+        printf("[Shutdown2] GPU mode cleanup\n");
+
+        if (sim->getWorldData()->gpuPipeline) {
+            printf("[Shutdown2] deleting gpuPipeline %p\n", (void*)sim->getWorldData()->gpuPipeline);
+            delete sim->getWorldData()->gpuPipeline;
+            sim->getWorldData()->gpuPipeline = nullptr;
+        }
+        if (sim->getWorldData()->gpuNarrowphase) {
+            printf("[Shutdown2] deleting gpuNarrowphase %p\n", (void*)sim->getWorldData()->gpuNarrowphase);
+            delete sim->getWorldData()->gpuNarrowphase;
+            sim->getWorldData()->gpuNarrowphase = nullptr;
+        }
+        if (sim->getWorldData()->gpuBroadphaseSap) {
+            printf("[Shutdown2] deleting gpuBroadphaseSap %p\n", (void*)sim->getWorldData()->gpuBroadphaseSap);
+            delete sim->getWorldData()->gpuBroadphaseSap;
+            sim->getWorldData()->gpuBroadphaseSap = nullptr;
+        }
+        if (sim->getWorldData()->gpuBroadphaseDbvt) {
+            printf("[Shutdown2] deleting gpuBroadphaseDbvt %p\n", (void*)sim->getWorldData()->gpuBroadphaseDbvt);
+            delete sim->getWorldData()->gpuBroadphaseDbvt;
+            sim->getWorldData()->gpuBroadphaseDbvt = nullptr;
+        }
+
+        if (sim->getWorldData()->openclQueue) {
+            printf("[Shutdown2] releasing openclQueue %p\n", (void*)sim->getWorldData()->openclQueue);
+            clReleaseCommandQueue(sim->getWorldData()->openclQueue);
+            sim->getWorldData()->openclQueue = nullptr;
+        }
+        if (sim->getWorldData()->openclContext) {
+            printf("[Shutdown2] releasing openclContext %p\n", (void*)sim->getWorldData()->openclContext);
+            clReleaseContext(sim->getWorldData()->openclContext);
+            sim->getWorldData()->openclContext = nullptr;
+        }
+    } else {
+        printf("[Shutdown2] GPU unavailable — skipping GPU cleanup\n");
+    }
+
+    // --- CPU WORLD TEARDOWN ---
+    btDynamicsWorld* world = sim->getWorldData()->dynamicsWorld;
+    printf("[Shutdown2] dynamicsWorld=%p\n", (void*)world);
+
+    if (world) {
+        world->setInternalTickCallback(nullptr);
+
+        // Remove constraints
+        for (int i = world->getNumConstraints() - 1; i >= 0; --i) {
+            btTypedConstraint* c = world->getConstraint(i);
+            printf("[Shutdown2] removing constraint[%d]=%p\n", i, (void*)c);
+            world->removeConstraint(c);
+            delete c;
+        }
+
+        // Remove collision objects
+        for (int i = world->getNumCollisionObjects() - 1; i >= 0; --i) {
+            btCollisionObject* obj = world->getCollisionObjectArray()[i];
+            printf("[Shutdown2] removing obj[%d]=%p\n", i, (void*)obj);
+
+            btRigidBody* body = btRigidBody::upcast(obj);
+            if (body) {
+                world->removeRigidBody(body);
+                btMotionState* ms = body->getMotionState();
+                if (ms) {
+                    printf("[Shutdown2] deleting motion state %p\n", (void*)ms);
+                    delete ms; // Only if we own it
+                    body->setMotionState(nullptr);
+                }
+            } else {
+                world->removeCollisionObject(obj);
+            }
+            delete obj;
+        }
+
+        // Clear manifolds
+        if (sim->getWorldData()->dispatcher) {
+            int mcount = sim->getWorldData()->dispatcher->getNumManifolds();
+            for (int i = 0; i < mcount; ++i) {
+                btPersistentManifold* man = sim->getWorldData()->dispatcher->getManifoldByIndexInternal(i);
+                if (man) man->clearManifold();
+            }
+        }
+
+        delete world;
+        sim->getWorldData()->dynamicsWorld = nullptr;
+    }
+
+    // Clear maps
+    sim->getWorldData()->updatesThisFrame.clear();
+    sim->getWorldData()->specialCollisionObjects.clear();
+
+    // Delete CPU components
+    if (sim->getWorldData()->solver) {
+        printf("[Shutdown2] deleting solver %p\n", (void*)sim->getWorldData()->solver);
+        delete sim->getWorldData()->solver;
+        sim->getWorldData()->solver = nullptr;
+    }
+    if (sim->getWorldData()->broadphase) {
+        printf("[Shutdown2] deleting broadphase %p\n", (void*)sim->getWorldData()->broadphase);
+        delete sim->getWorldData()->broadphase;
+        sim->getWorldData()->broadphase = nullptr;
+    }
+    if (sim->getWorldData()->dispatcher) {
+        printf("[Shutdown2] deleting dispatcher %p\n", (void*)sim->getWorldData()->dispatcher);
+        delete sim->getWorldData()->dispatcher;
+        sim->getWorldData()->dispatcher = nullptr;
+    }
+    if (sim->getWorldData()->collisionConfiguration) {
+        printf("[Shutdown2] deleting collisionConfiguration %p\n", (void*)sim->getWorldData()->collisionConfiguration);
+        delete sim->getWorldData()->collisionConfiguration;
+        sim->getWorldData()->collisionConfiguration = nullptr;
+    }
+
+    // --- Final debug cleanup ---
+    printf("[Shutdown2] Calling bsDebug_AllDone...\n");
+    bsDebug_AllDone();
+
+    // --- Delete sim itself ---
+    printf("[Shutdown2] Deleting sim...\n");
+    delete sim;
+
+    printf("[Shutdown2] END\n");
 }
+
 
 // Very low level reset of collision proxy pool
 EXTERN_C DLL_EXPORT void ResetBroadphasePool(BulletSim* sim)
 {
-	sim->getDynamicsWorld()->getBroadphase()->resetPool(sim->getDynamicsWorld()->getDispatcher());
+	// GPU implementation doesn't use this CPU broadphase
 }
+
 // Very low level reset of the constraint solver
 EXTERN_C DLL_EXPORT void ResetConstraintSolver(BulletSim* sim)
 {
-	sim->getDynamicsWorld()->getConstraintSolver()->reset();
+	// GPU implementation doesn't use this CPU constraint solver
 }
 
 /**
@@ -229,21 +585,73 @@ EXTERN_C DLL_EXPORT int PhysicsStep2(BulletSim* sim, float timeStep, int maxSubS
 //    update event array.
 EXTERN_C DLL_EXPORT bool PushUpdate2(btCollisionObject* obj)
 {
-	bsDebug_AssertIsKnownCollisionObject(obj, "PushUpdate2: not a known body");
-	bool ret = false;
-	btRigidBody* rb = btRigidBody::upcast(obj);
-	if (rb != NULL)
-	{
-		SimMotionState* sms = (SimMotionState*)rb->getMotionState();
-		if (sms != NULL)
-		{
-			btTransform wt;
-			sms->getWorldTransform(wt);
-			sms->setWorldTransform(wt, true);
-			ret = true;
-		}
-	}
-	return ret;
+    PHYS_LOG("PushUpdate2 START obj=%p", (void*)obj);
+
+    static bool s_bannerPrinted = [](){
+        std::printf("[PushUpdate2] BUILD=SelfHeal-RB-Attach v4 — compiled %s %s\n", __DATE__, __TIME__);
+        return true;
+    }();
+    (void)s_bannerPrinted;
+
+    if (!obj) return false;
+
+    btRigidBody* rb = btRigidBody::upcast(obj);
+    PHYS_LOG("After upcast: rb=%p", (void*)rb);
+    if (!rb) return false;
+
+    btMotionState* motionState = rb->getMotionState();
+    PHYS_LOG("MotionState pointer: %p", (void*)motionState);
+    if (!motionState) return false;
+
+    SimMotionState* sms = static_cast<SimMotionState*>(motionState);
+    PHYS_LOG("Cast to SimMotionState: %p", (void*)sms);
+
+    // Self-heal: ensure SimMotionState knows its RigidBody
+    if (!sms->getRigidBody()) {
+        PHYS_LOG("INFO: SimMotionState had null RigidBody. Attaching rb=%p", (void*)rb);
+        sms->setRigidBody(rb);
+    }
+
+    // Skip if not in world (don’t treat as an error)
+    if (!rb->isInWorld()) {
+        PHYS_LOG("SKIP: RigidBody not in world. rb=%p", (void*)rb);
+        return true;
+    }
+
+    btTransform wt;
+
+    if (staticSim->getWorldData()->isGpuAvailable) {
+        // GPU path: GPU is the source of truth; mirror into bt and publish.
+        PHYS_LOG("GPU path: fetching transform from GPU cache");
+        sms->getWorldTransformGPU(btToB3Transform(wt));          // converts from m_xformGPU -> b3Transform
+
+        // Publish to managed with GPU semantics (compound-root, velocity gating, zero-vel transition)
+        PHYS_LOG("Calling setWorldTransformGPU...");
+        sms->setWorldTransformGPU(btToB3Transform(wt), /*force=*/true);
+
+        // Set to kinematic
+		rb->setCollisionFlags(rb->getCollisionFlags() | btCollisionObject::CF_KINEMATIC_OBJECT);
+		rb->setActivationState(DISABLE_DEACTIVATION);
+
+		// ALSO update CPU-side state
+		PHYS_LOG("Calling setWorldTransformCPU...");
+		sms->setWorldTransformCPU(wt, /*force=*/true);
+    } else {
+        // CPU path: Bullet CPU is the source of truth; publish the current bt transform.
+        const btTransform& cur = rb->getWorldTransform();
+        wt = cur;
+
+        // Publish to managed with CPU semantics (reads velocities from rb)
+        PHYS_LOG("Calling setWorldTransformCPU...");
+        sms->setWorldTransformCPU(wt, /*force=*/true);
+
+        // Keep interpolation in sync and wake if needed
+        //rb->setInterpolationWorldTransform(wt);
+        rb->activate(true);
+    }
+
+    PHYS_LOG("PushUpdate2 END");
+    return true;
 }
 
 // =====================================================================
@@ -349,13 +757,15 @@ EXTERN_C DLL_EXPORT void UpdateChildTransform2(btCompoundShape* cShape, int chil
 EXTERN_C DLL_EXPORT Vector3 GetCompoundChildPosition2(btCompoundShape* cShape, int childIndex)
 {
 	btTransform childTrans = cShape->getChildTransform(childIndex);
-	return childTrans.getOrigin();
+    btVector3 origin = childTrans.getOrigin();
+    return Vector3(origin.x(), origin.y(), origin.z());
 }
 
 EXTERN_C DLL_EXPORT Quaternion GetCompoundChildOrientation2(btCompoundShape* cShape, int childIndex)
 {
-	btTransform childTrans = cShape->getChildTransform(childIndex);
-	return childTrans.getRotation();
+    btTransform childTrans = cShape->getChildTransform(childIndex);
+    btQuaternion rot = childTrans.getRotation();
+    return Quaternion(rot.x(), rot.y(), rot.z(), rot.w());
 }
 
 
@@ -521,24 +931,58 @@ EXTERN_C DLL_EXPORT int GetBodyType2(btCollisionObject* obj)
 	return obj->getInternalType();
 }
 
+// Creates a GPU-simulated body with a bt façade for C#.
+// - GPU is the source of truth (simulation runs on GPU).
+// - A kinematic btRigidBody mirrors the transform for C#/debug/raycasts.
+// - Falls back to CPU-only if GPU is unavailable or the shape isn’t supported.
 // ========================================================================
-// Create aa btRigidBody with our MotionState structure so we can track updates to this body.
-EXTERN_C DLL_EXPORT btCollisionObject* CreateBodyFromShape2(BulletSim* sim, btCollisionShape* shape, 
-						IDTYPE id, Vector3 pos, Quaternion rot)
+// Create aa btRigidBody with our MotionState structure so we can track updates to this 
+EXTERN_C DLL_EXPORT btCollisionObject* CreateBodyFromShape2(
+    BulletSim* sim,
+    btCollisionShape* shape,
+    IDTYPE id,
+    Vector3 pos,
+    Quaternion rot)
 {
-	bsDebug_AssertIsKnownCollisionShape(shape, "CreateBodyFromShape2: unknown collision shape");
-	btTransform bodyTransform(rot.GetBtQuaternion(), pos.GetBtVector3());
+    bool gpuOk = sim->getWorldData()->isGpuAvailable; // detect GPU availability
 
-	// Use the BulletSim motion state so motion updates will be sent up
-	SimMotionState* motionState = new SimMotionState(id, bodyTransform, &(sim->getWorldData()->updatesThisFrame));
-	btRigidBody::btRigidBodyConstructionInfo cInfo(0.0, motionState, shape);
-	btRigidBody* body = new btRigidBody(cInfo);
-	motionState->RigidBody = body;
+    // Decide mass automatically for CPU fallback
+    // You can make this smarter based on shape type or ID
+    float mass = gpuOk ? 0.0f : sim->computeMassFromShape(shape);
+    btVector3 localInertia(0, 0, 0);
+    if (mass > 0.0f) {
+        shape->calculateLocalInertia(mass, localInertia);
+    }
 
-	body->setUserPointer(PACKLOCALID(id));
-	bsDebug_RememberCollisionObject(obj);
+    // Convert to Bullet transform
+    btTransform startTransform;
+    startTransform.setOrigin(btVector3(pos.X, pos.Y, pos.Z));
+    startTransform.setRotation(btQuaternion(rot.X, rot.Y, rot.Z, rot.W));
 
-	return body;
+    // Motion state
+    btDefaultMotionState* motionState = new btDefaultMotionState(startTransform);
+	//SimMotionState* motionState = new SimMotionState(id, startTransform, &staticSim->getWorldData()->updatesThisFrame);
+
+    // Construct rigid body
+    btRigidBody::btRigidBodyConstructionInfo rbInfo(mass, motionState, shape, localInertia);
+    btRigidBody* body = new btRigidBody(rbInfo);
+	//motionState->RigidBody = body;
+
+    if (gpuOk) {
+        // GPU path: kinematic placeholder
+        body->setCollisionFlags(body->getCollisionFlags() | btCollisionObject::CF_KINEMATIC_OBJECT);
+        body->setActivationState(DISABLE_DEACTIVATION);
+		
+		int collidableIndex = sim->registerGpuShape(shape);
+
+        sim->registerWithGpu(collidableIndex, id, startTransform);
+    } else {
+        // CPU path: fully dynamic
+        body->setActivationState(ACTIVE_TAG);
+    }
+
+    sim->getDynamicsWorld()->addRigidBody(body);
+    return body;
 }
 
 // Create a btRigidBody with the default MotionState. We will not get any movement updates from this body.
@@ -2123,51 +2567,46 @@ EXTERN_C DLL_EXPORT float GetFriction2(btCollisionObject* obj)
 
 EXTERN_C DLL_EXPORT void SetWorldTransform2(btCollisionObject* obj, Transform& trans)
 {
-	obj->setWorldTransform(trans.GetBtTransform());
-}
+	if (!obj) return; // null check
 
-EXTERN_C DLL_EXPORT Transform GetWorldTransform2(btCollisionObject* obj)
-{
-	btTransform xform;
-
-	btRigidBody* rb = btRigidBody::upcast(obj);
-	if (rb)
-		xform = rb->getWorldTransform();
-	else
-		xform = obj->getWorldTransform();
-
-	return xform;
+    obj->setWorldTransform(trans.GetBtTransform());
 }
 
 // Helper function to get the position from the world transform.
-EXTERN_C DLL_EXPORT Vector3 GetPosition2(btCollisionObject* obj)
+EXTERN_C DLL_EXPORT Transform GetWorldTransform2(btCollisionObject* obj)
 {
-	btTransform xform;
+    btTransform xform;
 
-	// getWorldTransform() on a collisionObject adds interpolation to the position.
-	// Getting the transform directly from the rigidBody gets the real value.
-	btRigidBody* rb = btRigidBody::upcast(obj);
-	if (rb)
-		xform = rb->getWorldTransform();
-	else
-		xform = obj->getWorldTransform();
+    btRigidBody* rb = btRigidBody::upcast(obj);
+    if (rb)
+        xform = rb->getWorldTransform();
+    else
+        xform = obj->getWorldTransform();
 
-	btVector3 p = xform.getOrigin();
-	return Vector3(p.getX(), p.getY(), p.getZ());
+    Transform t;
+    t.m_basis = xform.getBasis();   // Matrix3x3 should have an assignment from btMatrix3x3
+    t.m_origin = Vector3(xform.getOrigin().x(),
+                         xform.getOrigin().y(),
+                         xform.getOrigin().z());
+    return t;
 }
+
 
 // Helper function to get the rotation from the world transform.
 EXTERN_C DLL_EXPORT Quaternion GetOrientation2(btCollisionObject* obj)
 {
-	Quaternion ret = Quaternion();
+    Quaternion ret;
 
-	btRigidBody* rb = btRigidBody::upcast(obj);
-	if (rb) 
-		ret = rb->getOrientation();
-	else
-		ret = obj->getWorldTransform().getRotation();
+    btRigidBody* rb = btRigidBody::upcast(obj);
+    btQuaternion btq;
 
-	return ret;
+    if (rb) 
+        btq = rb->getOrientation();
+    else
+        btq = obj->getWorldTransform().getRotation();
+
+    ret = Quaternion(btq.x(), btq.y(), btq.z(), btq.w());
+    return ret;
 }
 
 // Helper routine that sets the world transform based on the passed position and rotation.
@@ -2519,26 +2958,145 @@ EXTERN_C DLL_EXPORT void ClearForces2(btCollisionObject* obj)
 // Zero out all forces and bring the object to a dead stop
 EXTERN_C DLL_EXPORT void ClearAllForces2(btCollisionObject* obj)
 {
-	btVector3 zeroVector = btVector3(0.0, 0.0, 0.0);
+    if (!obj) {
+        printf("[ClearAllForces2] ERROR: Null btCollisionObject pointer received.\n");
+        return;
+    }
 
-	obj->setInterpolationLinearVelocity(zeroVector);
-	obj->setInterpolationAngularVelocity(zeroVector);
-	obj->setInterpolationWorldTransform(obj->getWorldTransform());
+    printf("[ClearAllForces2] Starting force clear for object: %p\n", (void*)obj);
 
-	btRigidBody* rb = btRigidBody::upcast(obj);
-	if (rb)
-	{
-		rb->setLinearVelocity(zeroVector);
-		rb->setAngularVelocity(zeroVector);
-		rb->clearForces();
-	}
+    bool gpuHandled = false;
+
+    // Check GPU availability
+    if (staticSim && staticSim->getWorldData()->isGpuAvailable) {
+        printf("[ClearAllForces2] GPU is available. Attempting GPU force clear...\n");
+
+        auto it = staticSim->m_objToGpuBodyId.find(obj);
+        if (it != staticSim->m_objToGpuBodyId.end()) {
+            int bodyId = it->second;
+            printf("[ClearAllForces2] Found GPU body ID: %d\n", bodyId);
+
+            b3Vector3 vectorZero;
+            vectorZero.setValue(0.0f, 0.0f, 0.0f);
+
+            staticSim->setGpuBodyLinearVelocity(bodyId, vectorZero);
+            printf("[ClearAllForces2] GPU linear velocity set to zero.\n");
+
+            staticSim->setGpuBodyAngularVelocity(bodyId, vectorZero);
+            printf("[ClearAllForces2] GPU angular velocity set to zero.\n");
+
+            gpuHandled = true;
+        } else {
+            printf("[ClearAllForces2] WARNING: Object not found in GPU body map. Falling back to CPU.\n");
+        }
+    } else {
+        printf("[ClearAllForces2] GPU not available. Using CPU fallback.\n");
+    }
+
+    // Always run CPU fallback if GPU path not taken
+    if (!gpuHandled) {
+        printf("[ClearAllForces2] Executing CPU force clear...\n");
+
+        btVector3 zeroVector;
+        zeroVector.setValue(0.0f, 0.0f, 0.0f);
+
+        obj->setInterpolationLinearVelocity(zeroVector);
+        printf("[ClearAllForces2] CPU interpolation linear velocity set to zero.\n");
+
+        obj->setInterpolationAngularVelocity(zeroVector);
+        printf("[ClearAllForces2] CPU interpolation angular velocity set to zero.\n");
+
+        obj->setInterpolationWorldTransform(obj->getWorldTransform());
+        printf("[ClearAllForces2] CPU interpolation world transform updated.\n");
+
+        btRigidBody* rb = btRigidBody::upcast(obj);
+        if (rb) {
+            rb->setLinearVelocity(zeroVector);
+            printf("[ClearAllForces2] CPU rigid body linear velocity set to zero.\n");
+
+            rb->setAngularVelocity(zeroVector);
+            printf("[ClearAllForces2] CPU rigid body angular velocity set to zero.\n");
+
+            rb->clearForces();
+            printf("[ClearAllForces2] CPU rigid body forces cleared.\n");
+        } else {
+            printf("[ClearAllForces2] WARNING: Object is not a btRigidBody. Skipping rigid body force clear.\n");
+        }
+    }
+
+    printf("[ClearAllForces2] Force clear complete for object: %p\n", (void*)obj);
 }
 
 EXTERN_C DLL_EXPORT void UpdateInertiaTensor2(btCollisionObject* obj)
 {
-	btRigidBody* rb = btRigidBody::upcast(obj);
-	if (rb) rb->updateInertiaTensor();
+    // Quick sanity
+    if (!staticSim || !obj) return;
+
+    WorldData* wd = staticSim->getWorldData();
+    if (!wd) return;
+
+    // If you need to check if it's "valid", check a field inside it
+    // For example, if gpuPipeline being null means invalid:
+    if (wd->gpuPipeline == nullptr && wd->openclQueue == nullptr && !wd->isGpuAvailable)
+        return;
+
+    auto log = [&](const char* msg) {
+        if (wd->debugLogCallback) wd->debugLogCallback(msg);
+        else { printf("%s\n", msg); fflush(stdout); }
+    };
+
+    // Debug
+    {
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+                 "UpdateInertiaTensor2: staticSim=%p wd=%p isGpuAvailable=%d queue=%p pipeline=%p",
+                 (void*)staticSim, (void*)wd, (int)wd->isGpuAvailable,
+                 (void*)wd->openclQueue, (void*)(wd->gpuPipeline ? wd->gpuPipeline->getBodyBuffer() : nullptr));
+        // log(buf);
+    }
+
+    const bool canUseGpu =
+        wd->isGpuAvailable &&
+        wd->openclQueue &&
+        wd->gpuPipeline &&
+        wd->gpuPipeline->getBodyBuffer();
+
+    bool handledOnGpu = false;
+
+    if (canUseGpu) {
+        auto it = staticSim->m_objToGpuBodyId.find(obj);
+        if (it != staticSim->m_objToGpuBodyId.end()) {
+            const int bodyId = it->second;
+            b3RigidBodyData* gpuBody = staticSim->getGpuBodyData(bodyId);
+
+            if (gpuBody) {
+                const btCollisionShape* shape = obj->getCollisionShape();
+                if (shape) {
+                    const float mass = staticSim->computeMassFromShape(shape);
+                    gpuBody->m_invMass = (mass > 0.0f) ? (1.0f / mass) : 0.0f;
+
+                    cl_mem bodyBuf = wd->gpuPipeline->getBodyBuffer();
+                    if (bodyBuf) {
+                        cl_int clErr = clEnqueueUnmapMemObject(wd->openclQueue, bodyBuf, gpuBody, 0, nullptr, nullptr);
+                        (void)clErr;
+                        handledOnGpu = true;
+                    }
+                }
+            }
+        }
+    }
+
+    btRigidBody* rb = btRigidBody::upcast(obj);
+    if (!rb) return;
+    if (rb->getInvMass() == 0.0f || rb->isKinematicObject()) return;
+
+    if (!handledOnGpu) {
+        rb->updateInertiaTensor();
+    }
 }
+
+
+
 
 EXTERN_C DLL_EXPORT Vector3 GetCenterOfMassPosition2(btCollisionObject* obj)
 {
@@ -2823,9 +3381,7 @@ EXTERN_C DLL_EXPORT SweepHit ConvexSweepTest2(BulletSim* world, btCollisionShape
  */
 EXTERN_C DLL_EXPORT RaycastHit RayTest2(BulletSim* world, Vector3 from, Vector3 to, unsigned int filterGroup, unsigned int filterMask)
 {
-	btVector3 f = from.GetBtVector3();
-	btVector3 t = to.GetBtVector3();
-	return world->RayTest(f, t, (short)filterGroup, (short)filterMask);
+	return world->RayTest(from.GetBtVector3(), to.GetBtVector3(), (short)filterGroup, (short)filterMask);
 }
 
 /**
@@ -2836,8 +3392,8 @@ EXTERN_C DLL_EXPORT RaycastHit RayTest2(BulletSim* world, Vector3 from, Vector3 
  */
 EXTERN_C DLL_EXPORT Vector3 RecoverFromPenetration2(BulletSim* world, unsigned int id)
 {
-	btVector3 v = world->RecoverFromPenetration(id);
-	return Vector3(v.getX(), v.getY(), v.getZ());
+    btVector3 bv = world->RecoverFromPenetration(id);
+    return Vector3(bv.getX(), bv.getY(), bv.getZ());
 }
 
 // =====================================================================

@@ -28,7 +28,6 @@
 
 #ifndef DEBUG_LOGIC_H
 #define DEBUG_LOGIC_H
-
 // Conditional compiled system for tracking the creation, reference and destruction
 //    of Bullet objects.
 // TODO: Implement if needed.
@@ -59,7 +58,9 @@
 
 #include <set>
 
-std::set<btCollisionObject*> bsDebug_collisionObjects;
+// GPU-related functionality would be implemented here when needed
+// Note: Bullet GPU (OpenCL) functionality typically operates at a different
+// abstraction level and doesn't use the same debug tracking as CPU objects
 
 #endif	// BSDEBUG
 

@@ -28,296 +28,124 @@
 
 #ifndef BULLET_SIM_H
 #define BULLET_SIM_H
+// Include Bullet2 headers first
+#include <btBulletCollisionCommon.h>
+#include <btBulletDynamicsCommon.h>
+
+// Undef conflicting macros
+#ifdef MAX_NUM_PARTS_IN_BITS
+#undef MAX_NUM_PARTS_IN_BITS
+#endif
 
 #define CL_TARGET_OPENCL_VERSION 120
+#include <clew/clew.h>
 #include <CL/cl.h>
 
 #include "DebugLogic.h"
-
 #include "ArchStuff.h"
 #include "APIData.h"
 #include "WorldData.h"
+#include "ShapeData.h"
 
-#include "BulletCollision/CollisionDispatch/btGhostObject.h"
-#include "LinearMath/btAlignedObjectArray.h"
-#include "LinearMath/btMotionState.h"
-#include "btBulletDynamicsCommon.h"
-
-// Add GPU acceleration includes
-#if defined(USE_GPU_ACCELERATION)
+#include "Bullet3OpenCL/RigidBody/b3GpuRigidBodyPipeline.h"
+#include "Bullet3Common/b3Vector3.h"
+#include "Bullet3Common/b3Quaternion.h"
+#include "Bullet3Common/b3Transform.h"
 #include "Bullet3OpenCL/Initialize/b3OpenCLUtils.h"
 #include "Bullet3OpenCL/BroadphaseCollision/b3GpuBroadphaseInterface.h"
 #include "Bullet3OpenCL/BroadphaseCollision/b3GpuSapBroadphase.h"
 #include "Bullet3OpenCL/RigidBody/b3GpuNarrowPhase.h"
-#include "Bullet3OpenCL/RigidBody/b3GpuRigidBodyPipeline.h"
-#else
-// Forward declarations for when GPU is disabled
-class b3GpuRigidBodyPipeline;
-class b3GpuBroadphaseInterface;
-class b3GpuNarrowPhase;
-#endif
+#include "Bullet3Collision/NarrowPhaseCollision/b3RaycastInfo.h"
 
-// Add missing include for btDynamicsWorld methods
-#include "BulletDynamics/Dynamics/btDiscreteDynamicsWorld.h"
+#include <BulletCollision/CollisionDispatch/btGhostObject.h>
+
+#include <BulletDynamics/Dynamics/btDynamicsWorld.h>
+#include <BulletDynamics/Dynamics/btRigidBody.h>
+#include <BulletCollision/CollisionShapes/btCollisionShape.h>
+#include <LinearMath/btDefaultMotionState.h>
+
+
+#include <LinearMath/btScalar.h>
 
 #include <set>
 #include <map>
+#include <vector>
+#include <cstdint>
+#include <string>
 
-// Vertex array that manages the memory for copied mesh data to prevent leaks
-class ManagedTriangleIndexVertexArray : public btTriangleIndexVertexArray
-{
-public:
-    btAlignedObjectArray<std::pair<void*, void*>> m_allocatedData; // pairs of [indexData, vertexData]
+#ifndef PHYS_LOG
+    #include <cstdio>
+    #define PHYS_LOG(fmt, ...) do { std::printf("[PHYS] " fmt "\n", ##__VA_ARGS__); } while (0)
+#endif
 
-    virtual ~ManagedTriangleIndexVertexArray()
-    {
-        for (int i = 0; i < m_allocatedData.size(); ++i)
-        {
-            delete[] (int*)m_allocatedData[i].first;    // delete index array
-            delete[] (float*)m_allocatedData[i].second; // delete vertex array
-        }
-        m_allocatedData.clear();
-    }
+extern btDynamicsWorld* gWorld;
 
-    // Helper function to add a mesh and track its allocated data
-    void addManagedIndexedMesh(const btIndexedMesh& mesh, void* indexData, void* vertexData, PHY_ScalarType indexType = PHY_INTEGER)
-    {
-        addIndexedMesh(mesh, indexType);
-        m_allocatedData.push_back(std::make_pair(indexData, vertexData));
-    }
+struct RayResult {
+    bool hasHit;
+    b3Vector3 hitNormalWorld;
+    b3Vector3 hitPointWorld;
+    int collisionObjectId;
+    float hitFraction;
 };
 
-// #define TOLERANCE 0.00001
-// these values match the ones in SceneObjectPart.SendScheduledUpdates()
-#define POSITION_TOLERANCE 0.05f
-#define VELOCITY_TOLERANCE 0.001f
-#define ROTATION_TOLERANCE 0.01f
-#define ANGULARVELOCITY_TOLERANCE 0.01f
+struct SweepResult {
+    bool hasHit;
+    b3Vector3 hitNormalWorld;
+    b3Vector3 hitPointWorld;
+    int collisionObjectId;
+    float hitFraction;
+};
 
-// If defined, use the HACD included with the Bullet distribution
-#define USEBULLETHACD 1
+struct ContactPoint {
+    b3Vector3 positionWorldOnA;
+    b3Vector3 positionWorldOnB;
+    b3Vector3 normalWorldOnB;
+    float distance;
+    float appliedImpulse;
+};
 
-// If defined, use the external VHACD library
-// #define USEVHACD 1
+struct ManifoldPoint {
+    b3Vector3 localPointA;
+    b3Vector3 localPointB;
+    b3Vector3 positionWorldOnA;
+    b3Vector3 positionWorldOnB;
+    b3Vector3 normalWorldOnB;
+    float distance;
+    float appliedImpulse;
+    int lifeTime;
+    void* userPersistentData;
+};
 
-// Build version string of format BULLETSIMVERSION,BULLETENGINEVERSION ("1.3,3.25")
-// This expects the version information to be passed in as defined variables (-D BULLETVERSION=...)
-//   If the version variables are not defined, the version string is just a comma.
-//   This uses the "#" pre-processor operator to stringify the variable and that adjacent strings are concatinated.
 #define MACRO_AS_STRING1(X) #X
 #define MACRO_AS_STRING(X) MACRO_AS_STRING1(X)
 
-//increase sub-step resolution and filter by contact impulse
 static const int    DEFAULT_MAX_SUBSTEPS = 12;
 static const float  DEFAULT_CONTACT_IMPULSE_THRESHOLD = 0.2f;
 
-
 static std::string BulletSimVersionString = MACRO_AS_STRING(BULLETSIMVERSION) "," MACRO_AS_STRING(BULLETVERSION);
 
-// Helper method to determine if an object is phantom or not
-static bool IsPhantom(const btCollisionObject* obj)
-{
-	// Characters are never phantom, but everything else with CF_NO_CONTACT_RESPONSE is
-	// TODO: figure out of this assumption for phantom sensing is still true
-	//    This is used in the raycast code an should be rethought for the real implementation.
-	return obj->getCollisionShape()->getShapeType() != CAPSULE_SHAPE_PROXYTYPE &&
-		(obj->getCollisionFlags() & btCollisionObject::CF_NO_CONTACT_RESPONSE) != 0;
-};
-
-
-// ============================================================================================
-// Motion state for rigid bodies in the scene. Updates the map of changed 
-// entities whenever the setWorldTransform callback is fired
-class SimMotionState : public btMotionState
-{
-public:
-	btRigidBody* RigidBody;
-	Vector3 ZeroVect;
-
-    SimMotionState(IDTYPE id, const btTransform& startTransform, std::map<IDTYPE, EntityProperties*>* updatesThisFrame)
-		: m_properties(id, startTransform), m_lastProperties(id, startTransform)
-	{
-        m_xform = startTransform;
-		m_updatesThisFrame = updatesThisFrame;
-    }
-
-    virtual ~SimMotionState()
-	{
-		m_updatesThisFrame->erase(m_properties.ID);
-    }
-
-    virtual void getWorldTransform(btTransform& worldTrans) const
-	{
-        worldTrans = m_xform;
-    }
-
-    virtual void setWorldTransform(const btTransform& worldTrans)
-	{
-	    setWorldTransform(worldTrans, false);
-	}
-
-    virtual void setWorldTransform(const btTransform& worldTrans, bool force)
-	{
-		m_xform = worldTrans;
-
-		// Put the new transform into m_properties
-		if (((RigidBody->getCollisionFlags() & BS_RETURN_ROOT_COMPOUND_SHAPE) != 0) 
-								&& RigidBody->getCollisionShape()->isCompound())
-		{
-			// If this is a compound shape, return the position of the zero shape
-			//     (the root of the linkset).
-			btCompoundShape* cShape = (btCompoundShape*)RigidBody->getCollisionShape();
-			btTransform rootChildTransformL = cShape->getChildTransform(0);
-			btTransform rootChildTransformW = worldTrans * rootChildTransformL;
-			m_properties.Position = rootChildTransformW.getOrigin();
-			m_properties.Rotation = rootChildTransformW.getRotation();
-			m_properties.AngularVelocity = RigidBody->getAngularVelocity();
-		}
-		else
-		{
-			m_properties.Position = m_xform.getOrigin();
-			m_properties.Rotation = m_xform.getRotation();
-			m_properties.AngularVelocity = RigidBody->getAngularVelocity();
-		}
-		// A problem with stock Bullet is that we don't get an event when an object is deactivated.
-		// This means that the last non-zero values for linear and angular velocity
-		// are left in the viewer who does dead reconning and the objects look like
-		// they float off.
-		// BulletSim ships with a patch to Bullet which creates such an event.
-		m_properties.Velocity = RigidBody->getLinearVelocity();
-
-		// Is this transform any different from the previous one?
-		// TODO: decide of this 'if' statement is needed. Since the updates are kept by ID,
-		//     couldn't we just always put any update into the map? The only down side would
-		//     be sending updates every tick for very small jiggles which happen over a long period of time.
-		if (force
-			|| !m_properties.Position.AlmostEqual(m_lastProperties.Position, POSITION_TOLERANCE)
-			|| !m_properties.Rotation.AlmostEqual(m_lastProperties.Rotation, ROTATION_TOLERANCE)
-			// If the Velocity and AngularVelocity are zero, most likely the object has
-			//    been deactivated. If they both are zero and they have become zero recently,
-			//    make sure a property update is sent so the zeros make it to the viewer.
-			|| ((m_properties.Velocity == ZeroVect && m_properties.AngularVelocity == ZeroVect)
-				&& (m_properties.Velocity != m_lastProperties.Velocity || m_properties.AngularVelocity != m_lastProperties.AngularVelocity))
-			//	If Velocity and AngularVelocity are non-zero but have changed, send an update.
-			|| !m_properties.Velocity.AlmostEqual(m_lastProperties.Velocity, VELOCITY_TOLERANCE)
-			|| !m_properties.AngularVelocity.AlmostEqual(m_lastProperties.AngularVelocity, ANGULARVELOCITY_TOLERANCE)
-			)
-		{
-			// Add this update to the list of updates for this frame.
-			m_lastProperties = m_properties;
-			(*m_updatesThisFrame)[m_properties.ID] = &m_properties;
-		}
-    }
-
-private:
-	std::map<IDTYPE, EntityProperties*>* m_updatesThisFrame;
-    btTransform m_xform;
-	EntityProperties m_properties;
-	EntityProperties m_lastProperties;
-};
-
-// ============================================================================================
-// Callback for convex sweeps that excludes the object being swept
-class ClosestNotMeConvexResultCallback : public btCollisionWorld::ClosestConvexResultCallback
-{
-public:
-	ClosestNotMeConvexResultCallback (btCollisionObject* me) : btCollisionWorld::ClosestConvexResultCallback(btVector3(0.0, 0.0, 0.0), btVector3(0.0, 0.0, 0.0))
-	{
-		m_me = me;
-	}
-
-	virtual btScalar addSingleResult(btCollisionWorld::LocalConvexResult& convexResult,bool normalInWorldSpace)
-	{
-		// Ignore collisions with ourself and phantom objects
-		if (convexResult.m_hitCollisionObject == m_me || IsPhantom(convexResult.m_hitCollisionObject))
-			return 1.0;
-
-		return ClosestConvexResultCallback::addSingleResult (convexResult, normalInWorldSpace);
-	}
-protected:
-	btCollisionObject* m_me;
-};
-
-// ============================================================================================
-// Callback for raycasts that excludes the object doing the raycast
-class ClosestNotMeRayResultCallback : public btCollisionWorld::ClosestRayResultCallback
-{
-public:
-	ClosestNotMeRayResultCallback (btCollisionObject* me) : btCollisionWorld::ClosestRayResultCallback(btVector3(0.0, 0.0, 0.0), btVector3(0.0, 0.0, 0.0))
-	{
-		m_me = me;
-	}
-
-	virtual btScalar addSingleResult(btCollisionWorld::LocalRayResult& rayResult,bool normalInWorldSpace)
-	{
-		if (rayResult.m_collisionObject == m_me || IsPhantom(rayResult.m_collisionObject))
-			return 1.0;
-
-		return ClosestRayResultCallback::addSingleResult (rayResult, normalInWorldSpace);
-	}
-protected:
-	btCollisionObject* m_me;
-};
-
-// ============================================================================================
-// Callback for non-moving overlap tests
-class ContactSensorCallback : public btCollisionWorld::ContactResultCallback
-{
-public:
-	btVector3 mOffset;
-
-	ContactSensorCallback(btCollisionObject* collider)
-		: btCollisionWorld::ContactResultCallback(), m_me(collider), m_maxPenetration(0.0), mOffset(0.0, 0.0, 0.0)
-	{
-	}
-
-	virtual	btScalar addSingleResult(btManifoldPoint& cp, const btCollisionObject* colObj0, int partId0, int index0, const btCollisionObject* colObj1, int partId1, int index1)
-	{
-		// Ignore terrain collisions
-		if (colObj0->getCollisionShape()->getShapeType() == TRIANGLE_SHAPE_PROXYTYPE ||
-			colObj1->getCollisionShape()->getShapeType() == TRIANGLE_SHAPE_PROXYTYPE)
-		{
-			return 0;
-		}
-
-		// Ignore collisions with phantom objects
-		if (IsPhantom(colObj0) || IsPhantom(colObj1))
-		{
-			return 0;
-		}
-
-		btScalar distance = cp.getDistance();
-
-		if (distance < m_maxPenetration)
-		{
-			m_maxPenetration = distance;
-
-			// Figure out if we are the first or second body in the collision 
-			// pair so we know which direction to point the collision normal
-			btScalar directionSign = (colObj0 == m_me) ? btScalar(-1.0) : btScalar(1.0);
-
-			// Push offset back using the collision normal and the depth of the collision
-			btVector3 touchingNormal = cp.m_normalWorldOnB * directionSign;
-			mOffset = touchingNormal * distance;
-		}
-
-		return 0;
-	}
-
-protected:
-	btCollisionObject* m_me;
-	btScalar m_maxPenetration;
-};
-
-// ============================================================================================
-// The main physics simulation class.
 class BulletSim
 {
 private:
-	//increase sub-step resolution and filter by contact impulse
-	int m_maxSubSteps;
+    // GPU management
+    std::map<IDTYPE, int> gpuBodies;
+    std::vector<uint32_t> m_gpuBodyIds;
+    std::vector<uint32_t> m_cpuBodyIds;
+    
+    int m_maxSubSteps;
     float m_contactImpulseThreshold;
-	
+    
+    bool m_gpuAvailable = false;
+
+    int m_dumpStatsCount;
+
+    WorldData m_worldData;
+
+    int m_maxUpdatesPerFrame;
+    EntityProperties* m_updatesThisFrameArray;
+
+    CollisionDesc* m_collidersThisFrameArray;
+    std::set<COLLIDERKEYTYPE> m_collidersThisFrame;
 	
 	// Bullet world objects
 	btBroadphaseInterface* m_broadphase;
@@ -325,45 +153,146 @@ private:
 	btConstraintSolver*	m_solver;
 	btDefaultCollisionConfiguration* m_collisionConfiguration;
 
-	// GPU acceleration objects
-	b3GpuRigidBodyPipeline* m_gpuPipeline;
-	b3GpuBroadphaseInterface* m_gpuBroadphase;
-	b3GpuNarrowPhase* m_gpuNarrowphase;
-	cl_context m_openclContext;
-	cl_command_queue m_openclQueue;
-	cl_device_id m_openclDevice;
-
-	int m_dumpStatsCount;
-
-	// Information about the world that is shared with all the objects
-	WorldData m_worldData;
-
-	// Where we process the tick's updates for passing back to managed code
-	int m_maxUpdatesPerFrame;
-	EntityProperties* m_updatesThisFrameArray;
-
-	// Used to expose colliders from Bullet to the BulletSim API
-	CollisionDesc* m_collidersThisFrameArray;
-	std::set<COLLIDERKEYTYPE> m_collidersThisFrame;
 
 public:
-	//increase sub-step resolution and filter by contact impulse
+    // Constructor declaration
+    BulletSim(float maxX, float maxY, float maxZ);
+	
+	
+	WorldData* getWorldData() { return &m_worldData; }
+	const WorldData* getWorldData() const { return &m_worldData; }
+	
+	std::map<btCollisionObject*, int> m_objToGpuBodyId;
+	
+	void setGpuBodyLinearVelocity(uint32_t bodyId, const b3Vector3& velocity);
+	void setGpuBodyAngularVelocity(uint32_t bodyId, const b3Vector3& velocity);
+
+
+	bool gpuRayTest(const b3Vector3& from, const b3Vector3& to, RayResult* result);
+
+    // Object manipulation methods
+    void AddObject2(int gpuBodyId, int group, int mask);
+    void RemoveObject2(int gpuBodyId);
+    void SetPositionAndOrientation2(int gpuBodyId, b3Vector3 pos, b3Quaternion rot);
+    void SetLinearVelocity2(int gpuBodyId, b3Vector3 vel);
+    void SetAngularVelocity2(int gpuBodyId, b3Vector3 vel);
+    void SetMass2(int gpuBodyId, float mass);
+    void SetFriction2(int gpuBodyId, float friction);
+    void SetRestitution2(int gpuBodyId, float restitution);
+    void SetGravity2(int gpuBodyId, b3Vector3 gravity);
+    void SetDamping2(int gpuBodyId, float linearDamping, float angularDamping);
+    void SetSleepingThresholds2(int gpuBodyId, float linearThreshold, float angularThreshold);
+    void SetCollisionFlags2(int gpuBodyId, int flags);
+    void SetCollisionFilter2(int gpuBodyId, int group, int mask);
+    void SetActivationState2(int gpuBodyId, int state);
+    void ApplyCentralForce2(int gpuBodyId, b3Vector3 force);
+    void ApplyCentralImpulse2(int gpuBodyId, b3Vector3 impulse);
+    void ApplyTorque2(int gpuBodyId, b3Vector3 torque);
+    void ApplyTorqueImpulse2(int gpuBodyId, b3Vector3 impulse);
+    void ApplyForce2(int gpuBodyId, b3Vector3 force, b3Vector3 pos);
+    void ApplyImpulse2(int gpuBodyId, b3Vector3 impulse, b3Vector3 pos);
+    void ClearForces2(int gpuBodyId);
+
+    SweepHit ConvexSweepTest(btCollisionShape* obj, btVector3& fromPos, btVector3& targetPos, btScalar extraMargin);
+    RayResult RayTest(b3Vector3& from, b3Vector3& to, short filterGroup, short filterMask);
+    const btVector3 RecoverFromPenetration(IDTYPE id);
+    
+    // Query methods
+    bool RayTest2(b3Vector3 from, b3Vector3 to, RayResult* result);
+    int GetContactPoints2(int bodyIdA, int bodyIdB, 
+                         ContactPoint* contacts, int maxContacts);
+    int GetManifoldPoints2(int bodyId, ManifoldPoint* points, int maxPoints);
+    bool GetAabb2(int bodyId, b3Vector3* aabbMin, b3Vector3* aabbMax);
+    
+    // Debug methods
+    void DumpWorld2();
+    void DumpObject2(int bodyId);
+    int GetNumCollisionObjects2();
+    int GetNumManifolds2();
+    int GetNumContactPoints2();
+	
+	bool initOpenCL(cl_context &context, cl_device_id &device, cl_command_queue &queue);
+	
+	std::map<btCollisionShape*, int> m_gpuShapeMap;
+	int registerGpuShape(btCollisionShape* shape);
+	
+	void registerWithGpu(int collidableIndex, int id, const btTransform& startTransform);
+	
+    void registerGpuBody(uint32_t id, uint32_t gpuId);
+    void registerCpuBody(uint32_t id);
+
     void SetMaxSubSteps(int steps) { m_maxSubSteps = steps; }
     void SetContactImpulseThreshold(float threshold) { m_contactImpulseThreshold = threshold; }
     float getContactImpulseThreshold() const { return m_contactImpulseThreshold; }
+    
+	// Keep existing method for collision objects
+    btCollisionObject* findBodyById(uint32_t id);
 	
-	BulletSim(btScalar maxX, btScalar maxY, btScalar maxZ);
-
-	virtual ~BulletSim()
+    void synchronizeGpuCpuData();
+    
+    virtual ~BulletSim()
 	{
 		exitPhysics2();
 	}
 
-	void initPhysics2(ParamBlock* parms, int maxCollisions, CollisionDesc* collisionArray, int maxUpdates, EntityProperties* updateArray);
-	void exitPhysics2();
+    void initPhysics2(ParamBlock* parms, int maxCollisions, CollisionDesc* collisionArray, int maxUpdates, EntityProperties* updateArray);
+    void exitPhysics2();
 
-	int PhysicsStep2(btScalar timeStep, int maxSubSteps, btScalar fixedTimeStep, int* updatedEntityCount, int* collidersCount);
+    // Add PhysicsStep2 declaration
+	int BulletSim::PhysicsStep2(btScalar timeStep, int maxSubSteps, btScalar fixedTimeStep, int* updatedEntityCount, int* collidersCount);
 
+
+	float pickDensityForShape(const btCollisionShape* shape);
+	float computeMassFromShape(const btCollisionShape* shape);
+	float computeShapeVolume(const btCollisionShape* shape);
+
+    // GPU shape creation methods
+    int CreateGpuMeshShape(int indicesCount, int* indices, int verticesCount, float* vertices);
+    int CreateGpuHullShape(int hullCount, float* hulls);
+    int CreateGpuBoxShape(b3Vector3 halfExtents);
+    int CreateGpuSphereShape(float radius);
+    int CreateGpuCylinderShape(b3Vector3 halfExtents);
+    int CreateGpuCapsuleShape(float radius, float height);
+    int CreateGpuConeShape(float radius, float height);
+    int CreateGpuMultiSphereShape(int sphereCount, b3Vector3* positions, float* radii);
+    int CreateGpuPlaneShape(b3Vector3 planeNormal, float planeConstant);
+    int CreateGpuHeightfieldShape(int width, int length, float* heightData, float minHeight, float maxHeight);
+    int CreateGpuCompoundShape();
+    void AddChildShapeToGpuCompound(int compoundShapeId, int childShapeId, b3Vector3 position, b3Quaternion rotation);
+
+    int registerPhysicsInstance2(float mass, const b3Vector3& position, const b3Quaternion& orientation, int collisionShapeIndex, int userData);
+
+    int maxCollisionsPerFrame;
+    int collisionsThisFrame;
+	
+	void RecordCollision(const btCollisionObject* objA, const btCollisionObject* objB, const btVector3& contact, const btVector3& norm, const float penetration);
+	void RecordGhostCollisions(btPairCachingGhostObject* obj);
+
+    
+    btDynamicsWorld* getDynamicsWorld() { return m_worldData.dynamicsWorld; };
+
+    bool UpdateParameter2(IDTYPE localID, const char* parm, float value);
+    void DumpPhysicsStats();
+	
+	RaycastHit RayTest(btVector3& from, btVector3& to, short filterGroup, short filterMask);
+	
+	static bool SingleSidedMeshCheckCallback(btManifoldPoint& cp, 
+							const btCollisionObjectWrapper* colObj0, int partId0, int index0,
+							const btCollisionObjectWrapper* colObj1, int partId1, int index1);
+							
+	/**
+	 * Maps the GPU body buffer and returns a pointer to the requested body data.
+	 * 
+	 *    The returned pointer is valid only until the buffer is unmapped.
+	 *    The caller is responsible for calling:
+	 *        clEnqueueUnmapMemObject(queue, buf, hostPtr, 0, nullptr, nullptr);
+	 *    when finished with the data.
+	 * 
+	 * @param bodyId Index of the body to retrieve.
+	 * @return Pointer to the mapped b3RigidBodyData for the given body.
+	 */
+	b3RigidBodyData* getGpuBodyData(uint32_t bodyId);
+	
 	btCollisionShape* CreateMeshShape2(int indicesCount, int* indices, int verticesCount, float* vertices);
 	btCollisionShape* CreateGImpactShape2(int indicesCount, int* indices, int verticesCount, float* vertices);
 	btCollisionShape* CreateHullShape2(int hullCount, float* hulls );
@@ -371,60 +300,185 @@ public:
 	btCollisionShape* BuildVHACDHullShapeFromMesh2(btCollisionShape* mesh, HACDParams* parms);
 	btCollisionShape* BuildConvexHullShapeFromMesh2(btCollisionShape* mesh);
 	btCollisionShape* CreateConvexHullShape2(int indicesCount, int* indices, int verticesCount, float* vertices);
-	btCollisionShape* CreateBoxShape2(btVector3 halfExtents);
-	btCollisionShape* CreateSphereShape2(btScalar radius);
-	btCollisionShape* CreateCylinderShape2(btVector3 halfExtents);
-	btCollisionShape* CreateCapsuleShape2(btScalar radius, btScalar height);
-	btCollisionShape* CreateConeShape2(btScalar radius, btScalar height);
-	btCollisionShape* CreateMultiSphereShape2(int sphereCount, btVector3* positions, btScalar* radii);
-	btCollisionShape* CreatePlaneShape2(btVector3 planeNormal, btScalar planeConstant);
-	btCollisionShape* CreateHeightfieldShape2(int width, int length, float* heightData, btScalar minHeight, btScalar maxHeight);
-	btCollisionShape* CreateEmptyShape2();
-	btCollisionShape* CreateCompoundShape2();
-	void AddChildShapeToCompound2(btCompoundShape* compoundShape, btCollisionShape* childShape, btVector3 position, btQuaternion rotation);
-	int registerPhysicsInstance2(float mass, const btVector3& position, const btQuaternion& orientation, int collisionShapeIndex, int userData);
 
-	// Missing function declarations
-	btCollisionShape* CreateHeightfieldTerrainShape2(int width, int length, float* heightfieldData, 
-                                                   float minHeight, float maxHeight, float heightScale, 
-                                                   int upAxis, int heightDataType);
-	btCollisionShape* CreateConvexTriangleMeshShape2(int indicesCount, int* indices, 
-                                                    int verticesCount, float* vertices);
-	btCollisionShape* CreateStaticPlaneShape2(btVector3 planeNormal, btScalar planeConstant);
-	btCollisionShape* CreateHACDShape2(int indicesCount, int* indices, int verticesCount, float* vertices);
-	btCollisionShape* CreateVHACDShape2(int indicesCount, int* indices, int verticesCount, float* vertices);
-
-	// Collisions: called to add a collision record to the collisions for a simulation step
-	int maxCollisionsPerFrame;
-	int collisionsThisFrame;
-	void RecordCollision(const btCollisionObject* objA, const btCollisionObject* objB, 
-							const btVector3& contact, const btVector3& norm, const float penetration);
-	void RecordGhostCollisions(btPairCachingGhostObject* obj);
-
-	SweepHit ConvexSweepTest(btCollisionShape* obj, btVector3& fromPos, btVector3& targetPos, btScalar extraMargin);
-	RaycastHit RayTest(btVector3& from, btVector3& to, short filterGroup, short filterMask);
-	const btVector3 RecoverFromPenetration(IDTYPE id);
-
-	WorldData* getWorldData() { return &m_worldData; }
-	btDynamicsWorld* getDynamicsWorld() { return m_worldData.dynamicsWorld; };
-
-	bool UpdateParameter2(IDTYPE localID, const char* parm, float value);
-	void DumpPhysicsStats();
-
-	// Add missing function declarations
-	btCollisionObject* CreateCollisionObject2(btCollisionShape* collisionShape, IDTYPE localID, int collisionType, int collisionFilterGroup, int collisionFilterMask);
-	btRigidBody* CreateRigidBody2(btScalar mass, btMotionState* motionState, btCollisionShape* collisionShape, IDTYPE localID, int collisionType, int collisionFilterGroup, int collisionFilterMask);
-	btPairCachingGhostObject* CreateGhostObject2(btCollisionShape* collisionShape, IDTYPE localID, int collisionFilterGroup, int collisionFilterMask);
-	void DestroyCollisionObject2(btCollisionObject* collisionObject);
-	void AddChildShapeToCompoundShape2(btCompoundShape* compoundShape, btCollisionShape* childShape, btTransform& localTransform);
-	void RemoveChildShapeFromCompoundShape2(btCompoundShape* compoundShape, btCollisionShape* childShape);
-	void UpdateChildTransformInCompoundShape2(btCompoundShape* compoundShape, btCollisionShape* childShape, btTransform& newLocalTransform);
-	void SetCollisionShapeMargin2(btCollisionShape* collisionShape, btScalar margin);
-	void SetCollisionObjectActivationState2(btCollisionObject* collisionObject, int activationState);
 
 protected:
-	void CreateGroundPlane();
-	void CreateTerrain();
+    void CreateGroundPlane();
+    void CreateTerrain();
 };
+
+// ============================================================================================
+// Motion state for rigid bodies in the scene. Updates the map of changed 
+// entities whenever the setWorldTransform callback is fired
+
+class SimMotionState : public btMotionState
+{
+public:
+    btRigidBody* RigidBody;
+    btVector3 ZeroVect; // Stays as btVector3
+
+    // Static tolerance constants - move these to BulletSim.cpp
+    static const btScalar POSITION_TOLERANCE;
+    static const btScalar ROTATION_TOLERANCE;
+    static const btScalar VELOCITY_TOLERANCE;
+    static const btScalar ANGULARVELOCITY_TOLERANCE;
+
+	SimMotionState(
+		IDTYPE id,
+		const btTransform& startTransform,
+		std::map<IDTYPE, EntityProperties*>* updatesThisFrame)
+		: m_properties(id, btToB3Transform(startTransform)),
+		  m_lastProperties(id, btToB3Transform(startTransform)),
+		  m_xformCPU(startTransform),
+		  m_xformGPU(btToB3Transform(startTransform)),
+		  m_updatesThisFrame(updatesThisFrame),
+		  RigidBody(nullptr),
+		  ZeroVect(0.0f, 0.0f, 0.0f) // ← No comma here!
+	{
+		ZeroVect = btVector3(0, 0, 0); // Optional, since you already initialized it
+	}
+	
+
+    virtual ~SimMotionState()
+    {
+        m_updatesThisFrame->erase(m_properties.ID);
+    }
+	
+	virtual void getWorldTransformGPU(b3Transform& worldTrans) const
+    {
+        worldTrans = m_xformGPU;
+    }
+
+    virtual void getWorldTransformCPU(btTransform& worldTrans) const
+    {
+        worldTrans = m_xformCPU;
+    }
+	
+	btRigidBody* getRigidBody() const { return RigidBody; }
+    void setRigidBody(btRigidBody* rb) { RigidBody = rb; }
+	
+    void setWorldTransformCPU(const btTransform& worldTrans, bool force)
+	{
+		if (!RigidBody) return;
+
+		btCollisionShape* shape = RigidBody->getCollisionShape();
+		if (!shape) return;
+
+		m_xformCPU = worldTrans; // pure btTransform, no b3 conversion
+
+		if ((RigidBody->getCollisionFlags() & BS_RETURN_ROOT_COMPOUND_SHAPE) != 0 
+			&& shape->isCompound())
+		{
+			btCompoundShape* cShape = static_cast<btCompoundShape*>(shape);
+			if (cShape->getNumChildShapes() > 0) {
+				btTransform rootChildTransformL = cShape->getChildTransform(0);
+				btTransform rootChildTransformW = worldTrans * rootChildTransformL;
+
+				m_properties.Position        = rootChildTransformW.getOrigin();      // btVector3
+				m_properties.Rotation        = rootChildTransformW.getRotation();    // btQuaternion
+				m_properties.AngularVelocity = RigidBody->getAngularVelocity();
+			}
+		}
+		else
+		{
+			m_properties.Position        = worldTrans.getOrigin();
+			m_properties.Rotation        = worldTrans.getRotation();
+			m_properties.AngularVelocity = RigidBody->getAngularVelocity();
+		}
+
+		m_properties.Velocity = RigidBody->getLinearVelocity();
+
+		if (m_updatesThisFrame) {
+			m_lastProperties = m_properties;
+			(*m_updatesThisFrame)[m_properties.ID] = &m_properties;
+		}
+	}
+	///setWorldTransformGPU NEEDS SERIOUS WORK!
+	/*btCollisionShape* btShape = RigidBody->getCollisionShape();
+
+		// Example: if it's a box shape
+		if (btBoxShape* box = dynamic_cast<btBoxShape*>(btShape)) {
+			btVector3 halfExtents = box->getHalfExtentsWithMargin();
+
+			b3CollisionShapeData gpuShape;
+			gpuShape.m_shapeType = BOX_SHAPE_PROXYTYPE;
+			gpuShape.m_dimensions[0] = halfExtents.getX();
+			gpuShape.m_dimensions[1] = halfExtents.getY();
+			gpuShape.m_dimensions[2] = halfExtents.getZ();
+
+			// Now gpuShape can be used to initialize a b3CollisionShape
+		}
+		
+		Prepare b3CollisionShapeData: You already have this part—populate the fields like m_shapeType, m_dimensions, m_localScaling, etc.
+
+		Allocate GPU memory for shapes: You’ll need to create a buffer on the GPU to hold your shape data. This is typically done using Bullet’s GPU utilities.
+
+		cpp
+		b3CollisionShapeData* shapeDataHost = new b3CollisionShapeData[numShapes];
+		// Fill shapeDataHost[i] with your shape info
+
+		cl_mem shapeBuffer = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+											sizeof(b3CollisionShapeData) * numShapes,
+											shapeDataHost, &err);
+		Register the shape buffer with the GPU pipeline: You’ll pass this buffer to the GPU pipeline, often via b3GpuNarrowPhase::setShapeData() or similar.
+
+		cpp
+		gpuNarrowPhase->setShapeData(shapeBuffer, numShapes);
+		Associate the shape with a rigid body: When creating a rigid body in the GPU pipeline, you’ll reference the index of the shape in the buffer.
+
+		cpp
+		b3RigidBodyData body;
+		body.m_collisionShapeIndex = shapeIndex; // Index into shape buffer
+
+	*/
+	void setWorldTransformGPU(const b3Transform& worldTrans, bool force)
+	{
+		/*// Bail if the rigid body pointer is invalid
+		if (!RigidBody) return;
+
+		btCollisionShape* shape = RigidBody->getCollisionShape();
+		if (!shape) return;
+
+		m_xformGPU = worldTrans;
+
+		if ((RigidBody->getCollisionFlags() & BS_RETURN_ROOT_COMPOUND_SHAPE) != 0 
+			&& shape->isCompound())
+		{
+			btCompoundShape* cShape = static_cast<btCompoundShape*>(shape);
+			if (cShape->getNumChildShapes() > 0) {
+				btTransform rootChildTransformL = cShape->getChildTransform(0);      //good luck making this work for gpu
+				btTransform rootChildTransformW = worldTrans * rootChildTransformL;  //good luck making this work for gpu
+
+				m_properties.Position        = rootChildTransformW.getOrigin();
+				m_properties.Rotation        = rootChildTransformW.getRotation();
+				m_properties.AngularVelocity = RigidBody->getAngularVelocity();
+			}
+		}
+		else
+		{
+			m_properties.Position        = worldTrans.getOrigin();
+			m_properties.Rotation        = worldTrans.getRotation();
+			m_properties.AngularVelocity = RigidBody->getAngularVelocity();
+		}
+
+		m_properties.Velocity = RigidBody->getLinearVelocity();
+
+		// Only push the update if the container exists
+		if (m_updatesThisFrame) {
+			m_lastProperties = m_properties;
+			(*m_updatesThisFrame)[m_properties.ID] = &m_properties;
+		}*/
+	}
+
+
+private:
+    std::map<IDTYPE, EntityProperties*>* m_updatesThisFrame;
+    btTransform m_xformCPU;
+	b3Transform m_xformGPU;
+    EntityProperties m_properties;
+    EntityProperties m_lastProperties;
+};
+
+
 
 #endif //BULLET_SIM_H

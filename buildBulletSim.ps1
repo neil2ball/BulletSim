@@ -1,11 +1,24 @@
 #! /usr/bin/env pwsh
 # Script to build BulletSim Windows binaries using locally built Bullet libraries
-
 param(
     [string]$BLIBDIR = "./lib",
     [string]$BINCLUDEDIR = "./include",
     [string]$TARGETBASE = "libBulletSim-3.27"
 )
+
+Write-Host "=== Applying BulletSim patches to include"
+foreach ($file in (Get-Item "./btScalar.h*")) {
+	$filename = $file.Name
+	$filePath = $file.FullName
+		
+	Write-Host "Processing patch: $filename"
+	Copy-Item $filename "./include/LinearMath/$filename"
+	if ($LASTEXITCODE -eq 0) {
+		Write-Host "Applied patch: $filename"
+	} else {
+		Write-Host "Warning: Failed to apply patch: $filename" -ForegroundColor Yellow
+	}
+}
 
 $BASE = Get-Location
 
@@ -51,7 +64,14 @@ $VERSIONCFLAGS = "/D BULLETVERSION=`"$BULLETVERSION`" /D BULLETSIMVERSION=`"$BUL
 
 # Compiler flags
 # Add this to your CFLAGS
-$CFLAGS = "/I`"$BINCLUDEDIR`" /I. /Zi /EHsc /W3 /nologo /LD /MT /fp:precise $VERSIONCFLAGS /D BULLETSIM_EXPORTS"
+#$CFLAGS = "/I`"$BINCLUDEDIR`" /I. /Zi /EHsc /W3 /nologo /LD /MT /O2 /arch:AVX /fp:fast $VERSIONCFLAGS /D BULLETSIM_EXPORTS /U BT_USE_DOUBLE_PRECISION /D btScalar=float /D BT_LARGE_FLOAT=1e18f"
+
+#$CFLAGS = "/I`"$BINCLUDEDIR`" /I. /Zi /EHsc /W3 /nologo /LD /MT /O2 /arch:AVX /fp:fast $VERSIONCFLAGS /D BULLETSIM_EXPORTS /U BT_USE_DOUBLE_PRECISION"
+
+#$CFLAGS = "/I`"$BINCLUDEDIR`" /I. /Zi /EHsc /W3 /nologo /LD /MT /O2 /arch:AVX /fp:fast $VERSIONCFLAGS /D BULLETSIM_EXPORTS /U BT_USE_DOUBLE_PRECISION /D BT_USE_OPENCL /D B3_USE_CLEW"
+
+$CFLAGS = "/I`"$BINCLUDEDIR`" /I. /Zi /EHsc /W3 /nologo /LD /MT /O2 /arch:AVX /fp:fast /Gd $VERSIONCFLAGS /D BULLETSIM_EXPORTS /U BT_USE_DOUBLE_PRECISION /D BT_USE_OPENCL /D B3_USE_CLEW"
+
 
 $EXTRAS_INCLUDE_PATH = "$BINCLUDEDIR\Extras"
 if (Test-Path $EXTRAS_INCLUDE_PATH -PathType Container) {
@@ -76,10 +96,18 @@ function Verify-Library {
 
 # Verify all required Bullet libraries exist (from local build)
 $REQUIRED_BULLET_LIBS = @(
-    "BulletDynamics"
-    "BulletCollision"
-    "LinearMath" 
-    "BulletXmlWorldImporter"
+    "BulletDynamics",
+    "BulletCollision", 
+    "LinearMath",
+    "BulletXmlWorldImporter",
+    "Bullet3OpenCL_clew",      
+    "Bullet3Dynamics",         
+    "Bullet3Collision",          
+    "Bullet3Geometry",         
+    "Bullet3Common",
+    "BulletSoftBody",
+	"BulletFileLoader",
+    "BulletWorldImporter"
 )
 
 # Optional libraries (warn if missing but continue)
@@ -112,9 +140,18 @@ $BULLETLIBS = @()
 foreach ($lib in $REQUIRED_BULLET_LIBS + $OPTIONAL_BULLET_LIBS) {
     $lib_path = "$lib.lib"
     if (Test-Path "$BLIBDIR\$lib_path") {
+		# Put Bullet3OpenCL_clew at the end of the list
+        if ($lib -eq "Bullet3OpenCL_clew") {
+            continue
+        }
         $BULLETLIBS += "$lib_path"
         Write-Host "? Using library: $lib_path"
     }
+}
+
+if (Test-Path "$BLIBDIR\Bullet3OpenCL_clew.lib") {
+    $BULLETLIBS += "Bullet3OpenCL_clew.lib"
+    Write-Host "? Using library: Bullet3OpenCL_clew.lib"
 }
 
 # Verify OpenCL library exists (optional)

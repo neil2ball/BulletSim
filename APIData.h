@@ -28,9 +28,18 @@
 
 #ifndef API_DATA_H
 #define API_DATA_H
+#include "Bullet3OpenCL/RigidBody/b3GpuRigidBodyPipeline.h"
+#include "Bullet3Common/b3Vector3.h"
+#include "Bullet3Common/b3Quaternion.h"
+#include "Bullet3Common/b3Transform.h"
+#include "Bullet3Common/b3Matrix3x3.h"
+
+#include "LinearMath/btTransform.h"
+#include "LinearMath/btVector3.h"
+#include "LinearMath/btQuaternion.h"
+#include "LinearMath/btMatrix3x3.h"
 
 #include "ArchStuff.h"
-#include "btBulletDynamicsCommon.h"
 
 // Fixed object ID codes used by OpenSimulator
 #define ID_TERRAIN 0	// OpenSimulator identifies collisions with terrain by localID of zero
@@ -63,12 +72,20 @@ struct Vector3
 		Z = z;
 	}
 
-	Vector3(const btVector3& v)
+	Vector3(const b3Vector3& v)
 	{
 		X = v.getX();
 		Y = v.getY();
 		Z = v.getZ();
 	}
+	
+	Vector3(const btVector3& v)
+	{
+		X = v.x();
+		Y = v.y();
+		Z = v.z();
+	}
+
 
 	bool AlmostEqual(const Vector3& v, const float nEpsilon)
 	{
@@ -77,13 +94,20 @@ struct Vector3
 			(((v.Y - nEpsilon) < Y) && (Y < (v.Y + nEpsilon))) &&
 			(((v.Z - nEpsilon) < Z) && (Z < (v.Z + nEpsilon)));
 	}
-
+	
+	b3Vector3 GetB3Vector3()
+	{
+		b3Vector3 result;
+		result.setValue(X, Y, Z);
+		return result;
+	}
+	
 	btVector3 GetBtVector3()
 	{
 		return btVector3(X, Y, Z);
 	}
 
-	void operator= (const btVector3& v)
+	void operator= (const b3Vector3& v)
 	{
 		X = v.getX();
 		Y = v.getY();
@@ -103,6 +127,15 @@ struct Vector3
 	{
 		return (X == b.X && Y == b.Y && Z == b.Z);
 	}
+	
+	Vector3& operator=(const btVector3& v)
+	{
+		X = v.x();
+		Y = v.y();
+		Z = v.z();
+		return *this;
+	}
+
 };
 
 // API-exposed structure for a rotation
@@ -129,7 +162,7 @@ struct Quaternion
 		W = ww;
 	}
 
-	Quaternion(const btQuaternion& btq)
+	Quaternion(const b3Quaternion& btq)
 	{
 		X = btq.getX();
 		Y = btq.getY();
@@ -146,18 +179,41 @@ struct Quaternion
 			(((q.W - nEpsilon) < W) && (W < (q.W + nEpsilon)));
 	}
 
+	b3Quaternion GetB3Quaternion()
+	{
+		return b3Quaternion(X, Y, Z, W);
+	}
+	
 	btQuaternion GetBtQuaternion()
 	{
 		return btQuaternion(X, Y, Z, W);
 	}
 
-	void operator= (const btQuaternion& q)
+	void operator= (const b3Quaternion& q)
 	{
 		X = q.getX();
 		Y = q.getY();
 		Z = q.getZ();
 		W = q.getW();
 	}
+	
+	Quaternion(const btQuaternion& btq)
+	{
+		X = btq.x();
+		Y = btq.y();
+		Z = btq.z();
+		W = btq.w();
+	}
+
+	Quaternion& operator=(const btQuaternion& q)
+	{
+		X = q.x();
+		Y = q.y();
+		Z = q.z();
+		W = q.w();
+		return *this;
+	}
+
 };
 
 struct Matrix3x3
@@ -170,12 +226,36 @@ public:
 		m_el[1] = Vector3(0.0, 1.0, 0.0);
 		m_el[2] = Vector3(0.0, 0.0, 1.0);
 	}
-	void operator= (const btMatrix3x3& o)
+	
+	Matrix3x3(const Vector3& row0, const Vector3& row1, const Vector3& row2)
+	{
+		m_el[0] = row0;
+		m_el[1] = row1;
+		m_el[2] = row2;
+	}
+
+	
+	void operator= (const b3Matrix3x3& o)
 	{
 		m_el[0] = o.getRow(0);
 		m_el[1] = o.getRow(1);
 		m_el[2] = o.getRow(2);
 	}
+	void operator=(const btMatrix3x3& o)
+	{
+		m_el[0] = Vector3(o[0].x(), o[0].y(), o[0].z());
+		m_el[1] = Vector3(o[1].x(), o[1].y(), o[1].z());
+		m_el[2] = Vector3(o[2].x(), o[2].y(), o[2].z());
+	}
+
+	b3Matrix3x3 GetB3Matrix3x3()
+	{
+		return b3Matrix3x3(
+			m_el[0].X, m_el[0].Y, m_el[0].Z,
+			m_el[1].X, m_el[1].Y, m_el[1].Z,
+			m_el[2].X, m_el[2].Y, m_el[2].Z );
+	}
+	
 	btMatrix3x3 GetBtMatrix3x3()
 	{
 		return btMatrix3x3(
@@ -187,8 +267,8 @@ public:
 
 struct Transform
 {
-	// A btTransform is made of a 3x3 array plus a btVector3 copy of the origin.
-	// Note that a btVector3 is defined as 4 floats (probably for alignment)
+	// A b3Transform is made of a 3x3 array plus a b3Vector3 copy of the origin.
+	// Note that a b3Vector3 is defined as 4 floats (probably for alignment)
 	//    which is why the assignment is done explicitly to get type conversion.
 	Matrix3x3 m_basis;
 	Vector3 m_origin;
@@ -197,14 +277,31 @@ public:
 		m_basis = Matrix3x3();
 		m_origin = Vector3();
 	}
-	Transform(const btTransform& t)
+	Transform(const b3Transform& t)
 	{
 		m_basis = t.getBasis();
 		m_origin = t.getOrigin();
 	}
+	b3Transform GetB3Transform()
+	{
+		return b3Transform(m_basis.GetB3Matrix3x3(), m_origin.GetB3Vector3());
+	}
+	
 	btTransform GetBtTransform()
 	{
 		return btTransform(m_basis.GetBtMatrix3x3(), m_origin.GetBtVector3());
+	}
+	
+	Transform(const btTransform& t)
+	{
+		btMatrix3x3 btBasis = t.getBasis();
+		m_basis = Matrix3x3(
+			Vector3(btBasis[0].x(), btBasis[0].y(), btBasis[0].z()),
+			Vector3(btBasis[1].x(), btBasis[1].y(), btBasis[1].z()),
+			Vector3(btBasis[2].x(), btBasis[2].y(), btBasis[2].z())
+		);
+		btVector3 btOrigin = t.getOrigin();
+		m_origin = Vector3(btOrigin.x(), btOrigin.y(), btOrigin.z());
 	}
 
 };
@@ -305,11 +402,11 @@ struct EntityProperties
 	EntityProperties()
 	{
 		ID = 0;
-		Position = btVector3();
-		Rotation = btQuaternion();
+		Position = b3Vector3();
+		Rotation = b3Quaternion();
 	}
 
-	EntityProperties(IDTYPE id, const btTransform& startTransform)
+	EntityProperties(IDTYPE id, const b3Transform& startTransform)
 	{
 		ID = id;
 		Position = startTransform.getOrigin();
@@ -411,28 +508,64 @@ struct HACDParams
 	float vHACDoclAcceleration;		// use OpenCL
 };
 
-// Structure for describing collision shapes
-struct ShapeDesc
-{
-    ShapeType Type;
-    union
-    {
-        struct { btVector3 HalfExtents; } Box;
-        struct { btScalar Radius; } Sphere;
-        struct { btVector3 HalfExtents; } Cylinder;
-        struct { btScalar Radius; btScalar Height; } Capsule;
-        struct { btScalar Radius; btScalar Height; } Cone;
-        struct { int SphereCount; btVector3* Positions; btScalar* Radii; } MultiSphere;
-        struct { int HullCount; float* Hulls; } ConvexHull;
-        struct { int IndicesCount; int* Indices; int VerticesCount; float* Vertices; } TriangleMesh;
-        struct { int IndicesCount; int* Indices; int VerticesCount; float* Vertices; } GImpact;
-        struct { int ChildCount; btCollisionShape** ChildShapes; btTransform* ChildTransforms; } Compound;
-        struct { btVector3 PlaneNormal; btScalar PlaneConstant; } Plane;
-        struct { int Width; int Length; float* HeightData; btScalar MinHeight; btScalar MaxHeight; } Heightfield;
-        struct { int IndicesCount; int* Indices; int VerticesCount; float* Vertices; HACDParams Params; } HACD;
-        struct { int IndicesCount; int* Indices; int VerticesCount; float* Vertices; HACDParams Params; } VHACD;
-    } Data;
-};
+// --- Vector ---
+inline btVector3 b3ToBtVector3(const b3Vector3& v) {
+    return btVector3(v.x, v.y, v.z);
+}
+
+inline b3Vector3 btToB3Vector3(const btVector3& v) {
+    b3Vector3 result;
+    result.setValue(v.x(), v.y(), v.z());
+    return result;
+}
+
+// --- Quaternion ---
+
+inline btQuaternion b3ToBtQuaternion(const b3Quaternion& b3Quat) {
+    return btQuaternion(b3Quat.x, b3Quat.y, b3Quat.z, b3Quat.w);
+}
+
+inline b3Quaternion btToB3Quaternion(const btQuaternion& btQuat) {
+    b3Quaternion result;
+    result.setValue(btQuat.x(), btQuat.y(), btQuat.z(), btQuat.w());
+    return result;
+}
+
+// --- Transform ---
+
+inline btTransform b3ToBtTransform(const b3Transform& t) {
+    // btTransform expects (rotation quaternion, origin vector)
+    return btTransform(
+        b3ToBtQuaternion(t.getRotation()),
+        b3ToBtVector3(t.getOrigin())
+    );
+}
+
+inline b3Transform btToB3Transform(const btTransform& t) {
+    // Use setters to avoid relying on constructor availability/signature differences
+    b3Transform result;
+    result.setRotation(btToB3Quaternion(t.getRotation()));
+    result.setOrigin(btToB3Vector3(t.getOrigin()));
+    return result;
+}
+
+// --- Matrix3x3 ---
+
+inline btMatrix3x3 b3ToBtMatrix3x3(const b3Matrix3x3& m) {
+    btMatrix3x3 result;
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            result[i][j] = m[i][j];
+    return result;
+}
+
+inline b3Matrix3x3 btToB3Matrix3x3(const btMatrix3x3& m) {
+    b3Matrix3x3 result;
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            result[i][j] = m[i][j];
+    return result;
+}
 
 #define CONSTRAINT_NOT_SPECIFIED (-1)
 #define CONSTRAINT_NOT_SPECIFIEDF (-1.0)
