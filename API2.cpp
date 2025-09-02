@@ -34,6 +34,9 @@
 #include "BulletCollision/BroadphaseCollision/btBroadphaseProxy.h"
 
 #include <map>
+#include <omp.h>
+#include <iostream>
+#include <algorithm>
 
 #if defined(_WIN32) || defined(_WIN64)
     #define DLL_EXPORT __declspec( dllexport )
@@ -164,6 +167,16 @@ EXTERN_C DLL_EXPORT BulletSim* Initialize2(Vector3 maxPosition, ParamBlock* parm
 											DebugLogCallback* debugLog)
 {
 	bsDebug_Initialize();
+	
+	omp_set_dynamic(1);  // Let OpenMP decide the best number of threads
+    omp_set_num_threads(omp_get_max_threads());  // Set upper limit
+	
+	#pragma omp parallel
+    {
+		if (omp_get_thread_num() == 0) {
+			std::cout << "OpenMP is active with thread count: " << omp_get_num_threads() << "\n";
+		}
+    }
 
 	BulletSim* sim = new BulletSim(maxPosition.X, maxPosition.Y, maxPosition.Z);
 	sim->getWorldData()->debugLogCallback = debugLog;

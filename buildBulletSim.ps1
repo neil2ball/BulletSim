@@ -6,19 +6,29 @@ param(
     [string]$TARGETBASE = "libBulletSim-3.27"
 )
 
-Write-Host "=== Applying BulletSim patches to include"
-foreach ($file in (Get-Item "./btScalar.h*")) {
-	$filename = $file.Name
-	$filePath = $file.FullName
-		
-	Write-Host "Processing patch: $filename"
-	Copy-Item $filename "./include/LinearMath/$filename"
-	if ($LASTEXITCODE -eq 0) {
-		Write-Host "Applied patch: $filename"
-	} else {
-		Write-Host "Warning: Failed to apply patch: $filename" -ForegroundColor Yellow
-	}
-}
+do {
+    Write-Host "Select the architecture level to build for:"
+    Write-Host "1. x86-64-v1 (SSE2)"
+    Write-Host "2. x86-64-v2 (AVX)"
+    Write-Host "3. x86-64-v3 (AVX2)"
+    Write-Host "4. x86-64-v4 (AVX-512)"
+
+    $choice = Read-Host "Enter your choice (1-4)"
+    switch ($choice) {
+        "1" { $arch = "x86-64-v1"; $compilerFlag = "/arch:SSE2"; $valid = $true }
+        "2" { $arch = "x86-64-v2"; $compilerFlag = "/arch:AVX";  $valid = $true }
+        "3" { $arch = "x86-64-v3"; $compilerFlag = "/arch:AVX2"; $valid = $true }
+        "4" { $arch = "x86-64-v4"; $compilerFlag = "/arch:AVX512"; $valid = $true }
+        default {
+            Write-Host "Invalid selection. Please try again."
+            $valid = $false
+        }
+    }
+} until ($valid)
+
+Write-Host "Selected architecture: $arch"
+Write-Host "MSVC compiler flag: $compilerFlag"
+
 
 $BASE = Get-Location
 
@@ -72,7 +82,7 @@ $VERSIONCFLAGS = "/D BULLETVERSION=`"$BULLETVERSION`" /D BULLETSIMVERSION=`"$BUL
 
 #$CFLAGS = "/I`"$BINCLUDEDIR`" /I. /Zi /EHsc /W3 /nologo /LD /MT /O2 /arch:AVX /fp:fast /Gd $VERSIONCFLAGS /D BULLETSIM_EXPORTS /U BT_USE_DOUBLE_PRECISION /D BT_USE_OPENCL /D B3_USE_CLEW"
 
-$CFLAGS = "/I`"$BINCLUDEDIR`" /I. /Zi /EHsc /W3 /nologo /LD /MT /O2 /arch:AVX /fp:fast /Gd $VERSIONCFLAGS /D BULLETSIM_EXPORTS /U BT_USE_DOUBLE_PRECISION /D BT_USE_OPENCL /D B3_USE_CLEW /D BT_USE_PROFILE /D USE_OPENMP"
+$CFLAGS = "/I`"$BINCLUDEDIR`" /I. /Zi /EHsc /W3 /nologo /LD /MT /O2 $compilerFlag /fp:fast /openmp:experimental /Gd $VERSIONCFLAGS /D BULLETSIM_EXPORTS /U BT_USE_DOUBLE_PRECISION /D BT_USE_OPENCL /D B3_USE_CLEW /D BT_USE_PROFILE /D USE_OPENMP"
 
 
 

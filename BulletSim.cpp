@@ -35,6 +35,8 @@
 #include "BulletCollision/Gimpact/btGImpactCollisionAlgorithm.h"
 #include "BulletCollision/Gimpact/btGImpactShape.h"
 
+#include <omp.h>
+
 #if defined(USEBULLETHACD)
 #if defined(__linux__) || defined(__APPLE__) 
 #include "HACD/hacdHACD.h"
@@ -99,7 +101,7 @@ static void SingleSidedMeshCheck(btManifoldPoint& cp, const btCollisionObjectWra
 		// Since the collision points are in local coordinates, create a transform for the collided
 		//    object like it was at <0, 0, 0>.
         btTransform orient = colObj->getWorldTransform();
-        orient.setOrigin( btVector3(0.0, 0.0, 0.0) );
+        orient.setOrigin( btVector3(0.0, 0.0, 0.0));
 
 		// Rotate that normal to world coordinates and normalize
         normal = orient * normal;
@@ -130,8 +132,14 @@ static void SubstepCollisionCallback(btDynamicsWorld *world, btScalar timeStep) 
 	BulletSim* bulletSim = (BulletSim*)world->getWorldUserInfo();
 
 	int numManifolds = world->getDispatcher()->getNumManifolds();
+	
+	bool breakFlag = false;
+	
+	#pragma omp parallel for if(!omp_in_parallel())
 	for (int j = 0; j < numManifolds; j++)
 	{
+		if (breakFlag) continue;
+		
 		btPersistentManifold* contactManifold = world->getDispatcher()->getManifoldByIndexInternal(j);
 		int numContacts = contactManifold->getNumContacts();
 		if (numContacts == 0)
@@ -154,8 +162,13 @@ static void SubstepCollisionCallback(btDynamicsWorld *world, btScalar timeStep) 
 
 		bulletSim->RecordCollision(objA, objB, contactPoint, contactNormal, penetration);
 
-		if (bulletSim->collisionsThisFrame >= bulletSim->maxCollisionsPerFrame) 
-			break;
+		if (bulletSim->collisionsThisFrame >= bulletSim->maxCollisionsPerFrame) {
+			#pragma omp critical(collisionsThisFrame)
+			{
+				
+				breakFlag = true;
+			}
+		}
 	}
 
 	// Any ghost objects must be relieved of their collisions.
@@ -351,58 +364,69 @@ void BulletSim::exitPhysics2()
 // Step the simulation forward by one full step and potentially some number of substeps
 int BulletSim::PhysicsStep2(btScalar timeStep, int maxSubSteps, btScalar fixedTimeStep, int* updatedEntityCount, int* collidersCount)
 {
-	int numSimSteps = 0;
+    int numSimSteps = 0;
 
-	if (m_worldData.dynamicsWorld)
-	{
+    if (m_worldData.dynamicsWorld)
+    {
+        // Clear collision data
+        m_collidersThisFrame.clear();
+        collisionsThisFrame = 0;
 
-		// All collisions are recorded by the substep callback which populate m_collidersThisFrame
-		m_collidersThisFrame.clear();
-		collisionsThisFrame = 0;
-
-		// The simulation calls the SimMotionState to put object updates into updatesThisFrame.
-		// m_worldData.BSLog("Before step");
-		// numSimSteps = m_worldData.dynamicsWorld->stepSimulation(timeStep, maxSubSteps, fixedTimeStep);
-		// m_worldData.BSLog("After step. Steps=%d,updates=%d", numSimSteps, m_worldData.updatesThisFrame.size());
-		
-		//increase sub‑step resolution and filter by contact impulse
-		int actualMaxSubSteps = (maxSubSteps > 0) ? maxSubSteps : m_maxSubSteps;
-        
+        // Physics simulation step (this is typically the bottleneck)
+        int actualMaxSubSteps = (maxSubSteps > 0) ? maxSubSteps : m_maxSubSteps;
         numSimSteps = m_worldData.dynamicsWorld->stepSimulation(timeStep, actualMaxSubSteps, fixedTimeStep);
 
-		if (m_dumpStatsCount != 0)
-		{
-			if (--m_dumpStatsCount <= 0)
-			{
-				m_dumpStatsCount = (int)m_worldData.params->physicsLoggingFrames;
-				// DumpPhysicsStatistics2(this);
-				DumpActivationInfo2(this);
-			}
-		}
+        // Statistics handling (not parallelizable)
+        if (m_dumpStatsCount != 0 && --m_dumpStatsCount <= 0)
+        {
+            m_dumpStatsCount = (int)m_worldData.params->physicsLoggingFrames;
+            DumpActivationInfo2(this);
+        }
 
-		// OBJECT UPDATES =================================================================
-		// Put all of the updates this frame into m_updatesThisFrameArray
-		int updates = 0;
-		if (m_worldData.updatesThisFrame.size() > 0)
-		{
-			WorldData::UpdatesThisFrameMapType::const_iterator it = m_worldData.updatesThisFrame.begin(); 
-			for (; it != m_worldData.updatesThisFrame.end(); it++)
-			{
-				m_updatesThisFrameArray[updates] = *(it->second);
-				updates++;
-				if (updates >= m_maxUpdatesPerFrame) 
-					break;
-			}
-			m_worldData.updatesThisFrame.clear();
-		}
+        // OBJECT UPDATES - Parallel processing
+        int updates = 0;
+        int mapSize = m_worldData.updatesThisFrame.size();
+        
+        if (mapSize > 0)
+        {
+            // Extract keys for safe parallel iteration
+            std::vector<decltype(m_worldData.updatesThisFrame)::key_type> keys;
+            keys.reserve(mapSize);
+            
+            for (const auto& pair : m_worldData.updatesThisFrame) {
+				//std::cout << "Entity key: " << pair.first << std::endl;
+                keys.push_back(pair.first);
+            }
+            
+            // Process updates in parallel with critical section for array writing
+            #pragma omp parallel for reduction(+:updates)
+            for (int i = 0; i < mapSize; ++i)
+            {
+                if (updates < m_maxUpdatesPerFrame)
+                {
+                    auto it = m_worldData.updatesThisFrame.find(keys[i]);
+                    if (it != m_worldData.updatesThisFrame.end())
+                    {
+                        #pragma omp critical
+                        {
+                            if (updates < m_maxUpdatesPerFrame)
+                            {
+                                m_updatesThisFrameArray[updates] = *(it->second);
+                                updates++;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            m_worldData.updatesThisFrame.clear();
+        }
 
-		// Update the values passed by reference into this function
-		*updatedEntityCount = updates;
+        *updatedEntityCount = updates;
+        *collidersCount = collisionsThisFrame;
+    }
 
-		*collidersCount = collisionsThisFrame;
-	}
-
-	return numSimSteps;
+    return numSimSteps;
 }
 
 void BulletSim::RecordCollision(const btCollisionObject* objA, const btCollisionObject* objB, 
@@ -463,12 +487,18 @@ void BulletSim::RecordGhostCollisions(btPairCachingGhostObject* obj)
 	btManifoldArray   manifoldArray;
 	btBroadphasePairArray& pairArray = obj->getOverlappingPairCache()->getOverlappingPairArray();
 	int numPairs = pairArray.size();
-
+	
+	bool shouldStop = false;
 	// For all the pairs of sets of contact points
+	#pragma omp parallel for if(!omp_in_parallel()) shared(shouldStop)
 	for (int i=0; i < numPairs; i++)
 	{
+		if (shouldStop) continue;
+		#pragma omp critical(collisionCheck)
 		if (collisionsThisFrame >= maxCollisionsPerFrame) 
-			break;
+		{
+			shouldStop = true;
+		}
 
 		manifoldArray.clear();
 		const btBroadphasePair& pair = pairArray[i];
@@ -494,17 +524,21 @@ void BulletSim::RecordGhostCollisions(btPairCachingGhostObject* obj)
 			//     here we find the penetrating contact in the manifold but for regular
 			//     collisions we assume the first point in the manifold is good enough.
 			//     Decide of this extra checking is required or if first point is good enough.
-			for (int p=0; p < numContacts; p++)
+			bool foundPenetration = false;
+			for (int p=0; p < numContacts && !foundPenetration; p++)
 			{
 				const btManifoldPoint& pt = contactManifold->getContactPoint(p);
 				// If a penetrating contact, this is a hit
+				
+				#pragma omp critical(recordCollision)
 				if (pt.getDistance()<0.f)
 				{
 					const btVector3& contactPoint = pt.getPositionWorldOnA();
 					const btVector3& normalOnA = -pt.m_normalWorldOnB;
+					
 					RecordCollision(objA, objB, contactPoint, normalOnA, pt.getDistance());
 					// Only one contact point for each set of colliding objects
-					break;
+					foundPenetration = true;
 				}
 			}
 		}
@@ -587,6 +621,7 @@ btCollisionShape* BulletSim::CreateHullShape2(int hullCount, float* hulls )
 	
 	// Loop through all of the convex hulls and add them to our compound shape
 	int ii = 1;
+	#pragma omp parallel for if(!omp_in_parallel()) 
 	for (int i = 0; i < hullCount; i++)
 	{
 		int vertexCount = (int)hulls[ii];
@@ -725,15 +760,15 @@ btCollisionShape* BulletSim::BuildHullShapeFromMesh2(btCollisionShape* mesh, HAC
 		for (int ii=0; ii < (int)nTriangles; ii++)
 		{
 			long tri = trianglesCH[ii].X();
-			btVector3 corner1(pointsCH[tri].X(), pointsCH[tri].Y(), pointsCH[tri].Z() );
+			btVector3 corner1(pointsCH[tri].X(), pointsCH[tri].Y(), pointsCH[tri].Z());
 			vertices.push_back(corner1);
 			centroid += corner1;
 			tri = trianglesCH[ii].Y();
-			btVector3 corner2(pointsCH[tri].X(), pointsCH[tri].Y(), pointsCH[tri].Z() );
+			btVector3 corner2(pointsCH[tri].X(), pointsCH[tri].Y(), pointsCH[tri].Z());
 			vertices.push_back(corner2);
 			centroid += corner2;
 			tri = trianglesCH[ii].Z();
-			btVector3 corner3(pointsCH[tri].X(), pointsCH[tri].Y(), pointsCH[tri].Z() );
+			btVector3 corner3(pointsCH[tri].X(), pointsCH[tri].Y(), pointsCH[tri].Z());
 			vertices.push_back(corner3);
 			centroid += corner3;
 		}

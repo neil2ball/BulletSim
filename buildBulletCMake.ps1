@@ -46,6 +46,30 @@ try {
         Write-Error "CMake is not installed or not in PATH. Please install CMake first."
         exit 1
     }
+	
+	do {
+		Write-Host "Select the architecture level to build for:"
+		Write-Host "1. x86-64-v1 (SSE2)"
+		Write-Host "2. x86-64-v2 (AVX)"
+		Write-Host "3. x86-64-v3 (AVX2)"
+		Write-Host "4. x86-64-v4 (AVX-512)"
+
+		$choice = Read-Host "Enter your choice (1-4)"
+		switch ($choice) {
+			"1" { $arch = "x86-64-v1"; $compilerFlag = "/arch:SSE2"; $valid = $true }
+			"2" { $arch = "x86-64-v2"; $compilerFlag = "/arch:AVX";  $valid = $true }
+			"3" { $arch = "x86-64-v3"; $compilerFlag = "/arch:AVX2"; $valid = $true }
+			"4" { $arch = "x86-64-v4"; $compilerFlag = "/arch:AVX512"; $valid = $true }
+			default {
+				Write-Host "Invalid selection. Please try again."
+				$valid = $false
+			}
+		}
+	} until ($valid)
+
+	Write-Host "Selected architecture: $arch"
+	Write-Host "MSVC compiler flag: $compilerFlag"
+
 
     Write-Host "=== Building Bullet in dir $bulletAbsPath for arch $MACH into $buildAbsPath with OpenCL support"
     Write-Host "Using OpenCL SDK at: $env:OPENCL_SDK_ROOT"
@@ -83,7 +107,7 @@ try {
 		"-DBUILD_BULLET3_COLLISION=ON",
 		"-DBUILD_BULLET3_DYNAMICS=ON",
 		"-DBUILD_BULLET3_GEOMETRY=ON",
-		"-DCMAKE_CXX_FLAGS=/EHsc /DBT_XML_SUPPORT /O2 /arch:AVX /fp:fast /Gd -UBT_USE_DOUBLE_PRECISION /openmp:experimental",
+		"-DCMAKE_CXX_FLAGS=/EHsc /DBT_XML_SUPPORT /O2 $compilerFlag /fp:fast /Gd -UBT_USE_DOUBLE_PRECISION /openmp:experimental",
 		"-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE=`"$buildAbsPath/lib/Release`"",
 		"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE=`"$buildAbsPath/lib/Release`"",
 		"-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE=`"$buildAbsPath/lib/Release`"",

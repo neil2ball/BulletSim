@@ -83,6 +83,9 @@ if [ "$FETCHBULLETSOURCES" = "yes" ]; then
     for file in ../000*; do
         filename=$(basename "$file")
         echo "Processing patch: $filename"
+		if [ "$filename" = "0002-opencl-bullet3-onlyfloats-windows-openml.patch" ]; then
+			continue
+		fi
 
                 if ! git apply --ignore-whitespace "$file"; then
                     echo "ERROR: Failed to apply OpenCL patch: $filename"

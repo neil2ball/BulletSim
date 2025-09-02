@@ -113,7 +113,7 @@ if ($FETCHBULLETSOURCES -eq "yes") {
 		$filename = $file.Name
 		$filePath = $file.FullName
 		
-		if ($filename -eq "0002-opencl-bullet3-onlyfloats-linux.patch") {
+		if ($filename -eq "0002-opencl-bullet3-onlyfloats-linux-openmp.patch") {
 			continue
 		}
 		

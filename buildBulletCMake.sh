@@ -34,6 +34,31 @@ cd "${BULLETDIR}"
 mkdir -p "${BUILDDIR}"
 cd "${BUILDDIR}"
 
+valid=false
+
+until $valid; do
+    echo "Select the architecture level to build for:"
+    echo "1. x86-64-v1 (SSE2)"
+    echo "2. x86-64-v2 (AVX)"
+    echo "3. x86-64-v3 (AVX2)"
+    echo "4. x86-64-v4 (AVX-512)"
+
+    read -p "Enter your choice (1-4): " choice
+
+    case "$choice" in
+        1) arch="x86-64-v1"; compiler_flag="-march=x86-64-v1"; valid=true ;;
+        2) arch="x86-64-v2"; compiler_flag="-march=x86-64-v2"; valid=true ;;
+        3) arch="x86-64-v3"; compiler_flag="-march=x86-64-v3"; valid=true ;;
+        4) arch="x86-64-v4"; compiler_flag="-march=x86-64-v4"; valid=true ;;
+        *) echo "Invalid selection. Please try again." ;;
+    esac
+    echo ""
+done
+
+echo "Selected architecture: $arch"
+echo "GCC compiler flag: $compiler_flag"
+
+
 echo "=== Building Bullet in dir ${BULLETDIR} for uname ${UNAME} and arch ${MACH} into ${BUILDDIR}"
 echo "Using OpenCL SDK at: $OPENCL_SDK_ROOT"
 
@@ -96,6 +121,7 @@ else
             -DBUILD_EXTRAS=ON \
             -DBUILD_BULLET3=ON \
             -DUSE_OPENCL=ON \
+	    -DUSE_OPENMP=ON \
             -DOpenCL_INCLUDE_DIR="$OpenCL_INCLUDE_DIR" \
             -DOpenCL_LIBRARY_DIR="$OpenCL_LIBRARY_DIR" \
             -DBUILD_UNIT_TESTS=OFF \
@@ -109,7 +135,7 @@ else
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -DOpenGL_GL_PREFERENCE=GLVND \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_FLAGS="-fPIC -DBT_XML_SUPPORT -O3 -mavx -ffast-math -fvisibility=default -UBT_USE_DOUBLE_PRECISION"
+            -DCMAKE_CXX_FLAGS="-fPIC -DBT_XML_SUPPORT -O3 $compiler_flag -ffast-math -fvisibility=default -UBT_USE_DOUBLE_PRECISION"
     elif [[ "$MACH" == "aarch64" ]]
     then
         echo "=== Running cmake for arch $MACH"

@@ -42,12 +42,36 @@ if [[ ! -f "VERSION" ]]; then
 fi
 BULLETSIMVERSION=$(cat "VERSION" | tr -d '[:space:]')
 
+valid=false
+
+until $valid; do
+    echo "Select the architecture level to build for:"
+    echo "1. x86-64-v1 (SSE2)"
+    echo "2. x86-64-v2 (AVX)"
+    echo "3. x86-64-v3 (AVX2)"
+    echo "4. x86-64-v4 (AVX-512)"
+
+    read -p "Enter your choice (1-4): " choice
+
+    case "$choice" in
+        1) arch="x86-64-v1"; compiler_flag="-march=x86-64-v1"; valid=true ;;
+        2) arch="x86-64-v2"; compiler_flag="-march=x86-64-v2"; valid=true ;;
+        3) arch="x86-64-v3"; compiler_flag="-march=x86-64-v3"; valid=true ;;
+        4) arch="x86-64-v4"; compiler_flag="-march=x86-64-v4"; valid=true ;;
+        *) echo "Invalid selection. Please try again." ;;
+    esac
+    echo ""
+done
+
+echo "Selected architecture: $arch"
+echo "GCC compiler flag: $compiler_flag"
+
 # Pass version information into compilations as C++ variables
 VERSIONCFLAGS="-DBULLETVERSION='\"${BULLETVERSION}\"' -DBULLETSIMVERSION='\"${BULLETSIMVERSION}\"'"
 
 # Compiler flags
 #CFLAGS="-I${BINCLUDEDIR} -I. -fPIC -g -fpermissive ${VERSIONCFLAGS} -D BULLETSIM_EXPORTS"
-CFLAGS="-I${BINCLUDEDIR} -I. -fPIC -g -fpermissive ${VERSIONCFLAGS} -DBULLETSIM_EXPORTS -UBT_USE_DOUBLE_PRECISION -O3 -mavx -ffast-math"
+CFLAGS="-I${BINCLUDEDIR} -I. -fPIC -g -fpermissive ${VERSIONCFLAGS} -DBULLETSIM_EXPORTS -UBT_USE_DOUBLE_PRECISION -O3 $compiler_flag -ffast-math -fopenmp"
 
 # Check for Extras include directory
 EXTRAS_INCLUDE_PATH="${BINCLUDEDIR}/Extras"
