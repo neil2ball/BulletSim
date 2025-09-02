@@ -46,7 +46,7 @@ until $valid; do
     read -p "Enter your choice (1-4): " choice
 
     case "$choice" in
-        1) arch="x86-64-v1"; compiler_flag="-march=x86-64-v1"; valid=true ;;
+        1) arch="x86-64-v1"; compiler_flag="-march=x86-64"; valid=true ;;
         2) arch="x86-64-v2"; compiler_flag="-march=x86-64-v2"; valid=true ;;
         3) arch="x86-64-v3"; compiler_flag="-march=x86-64-v3"; valid=true ;;
         4) arch="x86-64-v4"; compiler_flag="-march=x86-64-v4"; valid=true ;;
