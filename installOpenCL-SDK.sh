@@ -6,6 +6,7 @@ set -euo pipefail
 INSTALL_PATH="${INSTALL_PATH:-$HOME/OpenCL-SDK}"
 FORCE=false
 BUILD_THREADS="${BUILD_THREADS:-$(nproc)}"
+TARGET_OS="${TARGET_OS:-linux}"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -16,6 +17,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -j|--jobs)
             BUILD_THREADS="$2"
+            shift 2
+            ;;
+        --target-os)
+            TARGET_OS="$2"
             shift 2
             ;;
         *)
@@ -32,6 +37,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo "=== Khronos OpenCL SDK Builder ==="
+echo "Target OS: $TARGET_OS"
+echo "Install path: $INSTALL_PATH"
 
 # Check if already installed
 if [[ -d "$INSTALL_PATH" ]]; then
@@ -49,17 +56,34 @@ mkdir -p "$INSTALL_PATH"
 
 # Check for build dependencies
 echo "Checking for build dependencies..."
-for dep in git cmake g++ make pkg-config; do
-    if ! command -v $dep &> /dev/null; then
-        echo "Error: $dep is required but not installed. Please install it first."
+if [[ "$TARGET_OS" == "windows" ]]; then
+    # Windows dependencies
+    for dep in git cmake; do
+        if ! command -v $dep &> /dev/null; then
+            echo "Error: $dep is required but not installed. Please install it first."
+            exit 1
+        fi
+    done
+    
+    # Check if we have a compatible compiler
+    if ! command -v cl &> /dev/null && ! command -v x86_64-w64-mingw32-g++ &> /dev/null; then
+        echo "Error: No compatible compiler found. Please install Visual Studio or MinGW-w64."
         exit 1
     fi
-done
+else
+    # Linux dependencies
+    for dep in git cmake g++ make pkg-config; do
+        if ! command -v $dep &> /dev/null; then
+            echo "Error: $dep is required but not installed. Please install it first."
+            exit 1
+        fi
+    done
 
-# Check for system dependencies needed by OpenCL-ICD-Loader
-if ! pkg-config --exists libudev; then
-    echo "Error: libudev-dev is required but not installed. Please install it first."
-    exit 1
+    # Check for system dependencies needed by OpenCL-ICD-Loader
+    if ! pkg-config --exists libudev; then
+        echo "Error: libudev-dev is required but not installed. Please install it first."
+        exit 1
+    fi
 fi
 
 # Clone the repository with submodules
@@ -74,18 +98,39 @@ echo "Building OpenCL SDK in: $BUILD_DIR"
 
 # Configure and build
 cd "$BUILD_DIR"
-cmake "$TEMP_CLONE_DIR" \
-    -DCMAKE_INSTALL_PREFIX="$INSTALL_PATH" \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DBUILD_DOCS=OFF \
-    -DBUILD_EXAMPLES=OFF \
-    -DBUILD_TESTING=OFF
+
+# Set up CMake options based on target OS
+CMAKE_OPTIONS=(
+    "-DCMAKE_INSTALL_PREFIX=$INSTALL_PATH"
+    "-DCMAKE_BUILD_TYPE=Release"
+    "-DBUILD_DOCS=OFF"
+    "-DBUILD_EXAMPLES=OFF"
+    "-DBUILD_TESTING=OFF"
+	"-DOPENCL_SDK_BUILD_CLINFO=OFF"
+	"-DOPENCL_SDK_BUILD_SAMPLES=OFF"
+)
+
+if [[ "$TARGET_OS" == "windows" ]]; then
+    # Windows-specific options
+    if command -v x86_64-w64-mingw32-g++ &> /dev/null; then
+        # Use MinGW cross-compilation
+        CMAKE_OPTIONS+=(
+            "-DCMAKE_SYSTEM_NAME=Windows"
+            "-DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc"
+            "-DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++"
+            "-DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres"
+        )
+    fi
+    # For Visual Studio, let CMake auto-detect
+fi
+
+cmake "${CMAKE_OPTIONS[@]}" "$TEMP_CLONE_DIR"
 
 echo "Building with $BUILD_THREADS threads..."
-make -j "$BUILD_THREADS"
+cmake --build . --config Release --parallel "$BUILD_THREADS"
 
 echo "Installing to $INSTALL_PATH..."
-make install
+cmake --install . --config Release
 
 # Clean up temporary directories
 rm -rf "$TEMP_CLONE_DIR" "$BUILD_DIR"
@@ -93,25 +138,42 @@ rm -rf "$TEMP_CLONE_DIR" "$BUILD_DIR"
 # Set environment variables
 echo "Setting environment variables..."
 
-# Add to shell profile
-SHELL_PROFILE="${HOME}/.bashrc"
-[[ -f "${HOME}/.zshrc" ]] && SHELL_PROFILE="${HOME}/.zshrc"
+# Determine shell profile based on OS and shell
+if [[ "$TARGET_OS" == "windows" ]]; then
+    # Windows environment variables (for Git Bash, MSYS2, etc.)
+    SHELL_PROFILE="${HOME}/.bash_profile"
+    [[ -f "${HOME}/.bashrc" ]] && SHELL_PROFILE="${HOME}/.bashrc"
+    
+    # Add to PATH for Windows
+    cat << EOF >> "$SHELL_PROFILE"
 
-# Handle case where LD_LIBRARY_PATH might not be set
-LD_LIBRARY_PATH_FALLBACK=""
-if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
-    LD_LIBRARY_PATH_FALLBACK=":\$LD_LIBRARY_PATH"
-fi
+# OpenCL SDK configuration for Windows
+export OPENCL_SDK_ROOT="$INSTALL_PATH"
+export OpenCL_INCLUDE_DIR="\$OPENCL_SDK_ROOT/include"
+export OpenCL_LIBRARY_DIR="\$OPENCL_SDK_ROOT/lib"
+export PATH="\$OPENCL_SDK_ROOT/bin:\$OPENCL_SDK_ROOT/lib:\$PATH"
+EOF
+else
+    # Linux environment variables
+    SHELL_PROFILE="${HOME}/.bashrc"
+    [[ -f "${HOME}/.zshrc" ]] && SHELL_PROFILE="${HOME}/.zshrc"
+    
+    # Handle case where LD_LIBRARY_PATH might not be set
+    LD_LIBRARY_PATH_FALLBACK=""
+    if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
+        LD_LIBRARY_PATH_FALLBACK=":\$LD_LIBRARY_PATH"
+    fi
 
-cat << EOF >> "$SHELL_PROFILE"
+    cat << EOF >> "$SHELL_PROFILE"
 
-# OpenCL SDK configuration
+# OpenCL SDK configuration for Linux
 export OPENCL_SDK_ROOT="$INSTALL_PATH"
 export OpenCL_INCLUDE_DIR="\$OPENCL_SDK_ROOT/include"
 export OpenCL_LIBRARY_DIR="\$OPENCL_SDK_ROOT/lib"
 export PATH="\$OPENCL_SDK_ROOT/bin:\$PATH"
 export LD_LIBRARY_PATH="\$OPENCL_SDK_ROOT/lib${LD_LIBRARY_PATH_FALLBACK}"
 EOF
+fi
 
 # Set current session variables
 export OPENCL_SDK_ROOT="$INSTALL_PATH"
@@ -119,11 +181,13 @@ export OpenCL_INCLUDE_DIR="$INSTALL_PATH/include"
 export OpenCL_LIBRARY_DIR="$INSTALL_PATH/lib"
 export PATH="$INSTALL_PATH/bin:$PATH"
 
-# Handle LD_LIBRARY_PATH for current session
-if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
-    export LD_LIBRARY_PATH="$INSTALL_PATH/lib:$LD_LIBRARY_PATH"
-else
-    export LD_LIBRARY_PATH="$INSTALL_PATH/lib"
+if [[ "$TARGET_OS" != "windows" ]]; then
+    # Handle LD_LIBRARY_PATH for current session (Linux only)
+    if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
+        export LD_LIBRARY_PATH="$INSTALL_PATH/lib:$LD_LIBRARY_PATH"
+    else
+        export LD_LIBRARY_PATH="$INSTALL_PATH/lib"
+    fi
 fi
 
 # Verify installation
@@ -155,7 +219,9 @@ if $all_good; then
     echo "OPENCL_SDK_ROOT: $OPENCL_SDK_ROOT"
     echo "OpenCL_INCLUDE_DIR: $OpenCL_INCLUDE_DIR"
     echo "OpenCL_LIBRARY_DIR: $OpenCL_LIBRARY_DIR"
-    echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
+    if [[ "$TARGET_OS" != "windows" ]]; then
+        echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
+    fi
 else
     echo -e "\n[WARNING] Installation completed with some missing components."
 fi

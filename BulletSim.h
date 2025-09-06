@@ -25,7 +25,15 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 #pragma once
-
+#ifdef _WIN32
+  #ifdef BULLETSIM_EXPORTS
+    #define BULLETSIM_API __declspec(dllexport)
+  #else
+    #define BULLETSIM_API __declspec(dllimport)
+  #endif
+#else
+  #define BULLETSIM_API
+#endif
 #ifndef BULLET_SIM_H
 #define BULLET_SIM_H
 

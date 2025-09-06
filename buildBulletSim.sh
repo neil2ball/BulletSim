@@ -25,7 +25,44 @@ fi
 TARGETBASE=${TARGETBASE:-libBulletSim-3.27}
 ARCH=$(uname -m)
 BUILDDATE=$(date "+%Y%m%d")
-TARGET="${TARGETBASE}-${BUILDDATE}-${ARCH}.so"
+
+# Determine target platform and set appropriate flags
+if [[ "$TARGET_OS" == "windows" ]]; then
+    echo "=== Building for Windows (MinGW)"
+    CC=x86_64-w64-mingw32-gcc
+    CXX=x86_64-w64-mingw32-g++
+    EXT=".dll"
+    # Windows-specific flags for proper DLL linking
+    CFLAGS="$CFLAGS -D_WINDOWS -D_USRDLL -D_CRT_SECURE_NO_WARNINGS"
+    # Windows linking flags - add essential Windows libraries
+    LDFLAGS="-static-libstdc++ -static-libgcc -lgomp -lwinpthread -lole32 -loleaut32 -luuid -Wl,--enable-auto-import"
+    
+    # Windows-specific OpenCL paths
+    OPENCL_PATHS=(
+        "$HOME/OpenCL-SDK/include"
+        "/usr/x86_64-w64-mingw32/include"
+        "/mingw64/include"
+    )
+else
+    echo "=== Building for Linux"
+    CC=gcc
+    CXX=g++
+    EXT=".so"
+    # Follow Linux best practices: static link only OpenMP, dynamic link system libraries
+    LDFLAGS="-lgomp"
+    
+    # Linux-specific OpenCL paths
+    OPENCL_PATHS=(
+        "$HOME/OpenCL-SDK/include"
+        "/usr/include"
+        "/usr/local/include"
+        "/usr/local/cuda/include"
+        "/opt/AMDAPP/include"
+    )
+fi
+
+# Update target name with appropriate extension
+TARGET="${TARGETBASE}-${BUILDDATE}-${ARCH}${EXT}"
 
 # Version of the Bullet engine that is being linked
 if [[ -f "${BLIBDIR}/VERSION" ]]; then
@@ -70,7 +107,6 @@ echo "GCC compiler flag: $compiler_flag"
 VERSIONCFLAGS="-DBULLETVERSION='\"${BULLETVERSION}\"' -DBULLETSIMVERSION='\"${BULLETSIMVERSION}\"'"
 
 # Compiler flags
-#CFLAGS="-I${BINCLUDEDIR} -I. -fPIC -g -fpermissive ${VERSIONCFLAGS} -D BULLETSIM_EXPORTS"
 CFLAGS="-I${BINCLUDEDIR} -I. -fPIC -g -fpermissive ${VERSIONCFLAGS} -DBULLETSIM_EXPORTS -UBT_USE_DOUBLE_PRECISION -O3 $compiler_flag -ffast-math -fopenmp"
 
 # Check for Extras include directory
@@ -134,43 +170,28 @@ for lib in "${REQUIRED_BULLET_LIBS[@]}" "${OPTIONAL_BULLET_LIBS[@]}"; do
     fi
 done
 
-# OpenCL support discovery
+# OpenCL support discovery - platform-specific
 echo "=== Checking for OpenCL support"
 OPENCL_CFLAGS=""
 OPENCL_LIBS=""
 
-# Check for OpenCL headers
-OPENCL_PATHS=(
-    "$HOME/OpenCL-SDK/include"
-    "/usr/include"
-    "/usr/local/include"
-    "/usr/local/cuda/include"
-    "/opt/AMDAPP/include"
-)
-
-for path in "${OPENCL_PATHS[@]}"; do
-    if [[ -f "${path}/CL/cl.h" ]]; then
-        OPENCL_CFLAGS="-I${path} -D BT_USE_OPENCL"
-        echo "✓ Found OpenCL headers in: ${path}"
-        break
-    elif [[ -f "${path}/cl.h" ]]; then
-        OPENCL_CFLAGS="-I${path} -D BT_USE_OPENCL"
-        echo "✓ Found OpenCL headers in: ${path}"
-        break
+# Check for OpenCL SDK installation
+if [[ -d "$HOME/OpenCL-SDK" ]]; then
+    OPENCL_CFLAGS="-I$HOME/OpenCL-SDK/include -D BT_USE_OPENCL"
+    echo "✓ Using OpenCL SDK at: $HOME/OpenCL-SDK"
+    
+    if [[ "$TARGET_OS" == "windows" ]]; then
+        # For Windows, use the specific OpenCL import library
+        OPENCL_LIBS="-L$HOME/OpenCL-SDK/lib -l:libOpenCL.dll.a"
+        echo "✓ Using Windows OpenCL library: libOpenCL.dll.a"
+    else
+        # For Linux, use standard OpenCL linking
+        OPENCL_LIBS="-L$HOME/OpenCL-SDK/lib -lOpenCL"
+        echo "✓ Using Linux OpenCL library"
     fi
-done
-
-if [[ -z "${OPENCL_CFLAGS}" ]]; then
-    echo "⚠ Warning: OpenCL headers not found. Disabling OpenCL support."
-    OPENCL_CFLAGS="-D NO_OPENCL"
-fi
-
-# Check for OpenCL library
-if ldconfig -p | grep -q libOpenCL.so; then
-    OPENCL_LIBS="-lOpenCL"
-    echo "✓ Found OpenCL library"
 else
-    echo "⚠ Warning: OpenCL library not found"
+    echo "⚠ Warning: OpenCL SDK not found at $HOME/OpenCL-SDK. Disabling OpenCL support."
+    OPENCL_CFLAGS="-D NO_OPENCL"
 fi
 
 CFLAGS="${CFLAGS} ${OPENCL_CFLAGS}"
@@ -187,17 +208,17 @@ if [[ ! -f "BulletSim.cpp" ]]; then
 fi
 
 # Compile source files
-echo "=== Compiling source files"
+echo "=== Compiling source files with $CXX"
 echo "Using include directory: ${BINCLUDEDIR}"
 echo "Using library directory: ${BLIBDIR}"
 
-g++ ${CFLAGS} -c API2.cpp
+$CXX ${CFLAGS} -c API2.cpp
 if [[ $? -ne 0 ]]; then
     echo "Failed to compile API2.cpp"
     exit 1
 fi
 
-g++ ${CFLAGS} -c BulletSim.cpp
+$CXX ${CFLAGS} -c BulletSim.cpp
 if [[ $? -ne 0 ]]; then
     echo "Failed to compile BulletSim.cpp"
     exit 1
@@ -207,7 +228,23 @@ fi
 echo "=== Building target ${TARGET}"
 echo "Linking with locally built Bullet libraries"
 
-g++ -shared -o "${TARGET}" API2.o BulletSim.o ${BULLETLIBS} ${OPENCL_LIBS} -L${BLIBDIR}
+# For Windows builds, ensure we link against required system libraries
+if [[ "$TARGET_OS" == "windows" ]]; then
+    # Add ALL necessary Windows system libraries
+    WINDOWS_LIBS="-lwinpthread -lole32 -loleaut32 -luuid -ladvapi32 -lkernel32 -luser32 -lgdi32 -lsetupapi -lversion -lshell32 -lcomdlg32"
+    
+    # Use the correct OpenCL library from your SDK
+    OPENCL_LIBS="-L$HOME/OpenCL-SDK/lib -l:libOpenCL.dll.a"
+    
+    LINK_COMMAND="$CXX -shared -o \"${TARGET}\" API2.o BulletSim.o ${BULLETLIBS} ${OPENCL_LIBS} -L${BLIBDIR} ${LDFLAGS} ${WINDOWS_LIBS} -Wl,--enable-auto-import -Wl,--image-base,0x10000000"
+else
+    LINK_COMMAND="$CXX -shared -o \"${TARGET}\" API2.o BulletSim.o ${BULLETLIBS} ${OPENCL_LIBS} -L${BLIBDIR} ${LDFLAGS}"
+fi
+
+
+# Execute the link command
+echo "Running: $LINK_COMMAND"
+eval $LINK_COMMAND
 
 # Check if build was successful
 if [[ $? -eq 0 ]]; then
@@ -217,14 +254,49 @@ if [[ $? -eq 0 ]]; then
     if [[ -f "${TARGET}" ]]; then
         echo "✓ Shared library created successfully"
 
-        # Verify BSLog symbol using nm
-        echo "=== Verifying WorldData::BSLog symbol is present..."
-        if nm -D "${TARGET}" | grep -q "BSLog"; then
-            echo "✓ Found BSLog symbol"
+        # Platform-specific symbol verification
+        if [[ "$TARGET_OS" == "windows" ]]; then
+            echo "=== Verifying DLL exports using objdump..."
+            
+            # Check for export table
+            if x86_64-w64-mingw32-objdump -p "${TARGET}" | grep -q "Export Address Table"; then
+                echo "✓ DLL has an export table"
+                
+                # Try to find BSLog (might be name-mangled)
+                if x86_64-w64-mingw32-objdump -p "${TARGET}" | grep -i "BSLog"; then
+                    echo "✓ Found BSLog symbol in export table"
+                else
+                    echo "⚠ Note: BSLog symbol not found via objdump (may be name-mangled)"
+                    echo "   Trying strings method..."
+                    if strings "${TARGET}" | grep -i "BSLog"; then
+                        echo "✓ Found BSLog string in binary"
+                    else
+                        echo "⚠ Warning: BSLog not found via strings either"
+                    fi
+                fi
+            else
+                echo "⚠ Warning: No export table found in DLL"
+            fi
+            
+            # Check for OpenMP (statically linked, so symbols won't be exported)
+            echo "=== OpenMP is statically linked, symbols won't appear in export table"
+            
         else
-            echo "⚠ Warning: BSLog symbol not found in exports - may cause runtime errors"
-        fi
+            # Linux verification with nm
+            echo "=== Verifying WorldData::BSLog symbol is present..."
+            if nm -D "${TARGET}" | grep -q "BSLog"; then
+                echo "✓ Found BSLog symbol"
+            else
+                echo "⚠ Warning: BSLog symbol not found in exports - may cause runtime errors"
+            fi
 
+            echo "=== Verifying OpenMP support..."
+            if nm -D "${TARGET}" | grep -q "omp_get_num_threads"; then
+                echo "✓ Found OpenMP symbol: omp_get_num_threads"
+            else
+                echo "⚠ Warning: OpenMP symbol omp_get_num_threads not found in exports - OpenMP may not be linked correctly"
+            fi
+        fi
     else
         echo "Error: Shared library was not created despite successful link"
         exit 1

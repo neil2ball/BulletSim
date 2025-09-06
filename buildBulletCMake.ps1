@@ -83,11 +83,16 @@ try {
 		"-A", $MACH,
 		"-DBUILD_SHARED_LIBS=OFF",
 		"-DBUILD_BULLET2_DEMOS=OFF",
-		"-DBUILD_EXTRAS=ON",
+		"-DBUILD_EXTRas=ON",
 		"-DBUILD_BULLET3=ON",
 		"-DUSE_OPENMP=ON",
 		"-DUSE_OPENCL=ON",
 		"-DBT_USE_PROFILE=ON",
+		"-DBULLET2_MULTITHREADING=ON",
+		"-DBULLET2_USE_OPEN_MP_MULTITHREADING=ON",
+		"-DBT_THREADSAFE=ON",
+		"-DBT_USE_OPENMP=ON",
+		"-DBUILD_OPENMP=ON ",
 		"-DBUILD_UNIT_TESTS=OFF",
 		"-DBUILD_BULLET_ROBOTICS_EXTRA=ON",
 		"-DBUILD_BULLET_ROBOTICS_GUI_EXTRA=OFF",
@@ -104,16 +109,8 @@ try {
 		"-DINSTALL_EXTRA_LIBS=ON",
 		"-DINSTALL_LIBS=ON",
 		"-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
-		"-DBUILD_BULLET3_COLLISION=ON",
-		"-DBUILD_BULLET3_DYNAMICS=ON",
-		"-DBUILD_BULLET3_GEOMETRY=ON",
-		"-DCMAKE_CXX_FLAGS=/EHsc /DBT_XML_SUPPORT /O2 $compilerFlag /fp:fast /Gd -UBT_USE_DOUBLE_PRECISION /openmp:experimental",
-		"-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE=`"$buildAbsPath/lib/Release`"",
-		"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE=`"$buildAbsPath/lib/Release`"",
-		"-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE=`"$buildAbsPath/lib/Release`"",
-		"-DCMAKE_EXE_LINKER_FLAGS_RELEASE=`"/INCREMENTAL:NO`"",
-		"-DCMAKE_SHARED_LINKER_FLAGS_RELEASE=`"/INCREMENTAL:NO`"",
-		"-DCMAKE_MODULE_LINKER_FLAGS_RELEASE=`"/INCREMENTAL:NO`"",
+		"-DCMAKE_CXX_FLAGS=/EHsc /DBT_XML_SUPPORT /O2 $compilerFlag /fp:fast /Gd -UBT_USE_DOUBLE_PRECISION /openmp:static",
+		"-DCMAKE_C_FLAGS=/openmp:static",
 		".."
 	)
 
@@ -126,128 +123,27 @@ try {
         exit $LASTEXITCODE
     }
 
+    # Find the solution file that CMake actually generated
+    $solutionFile = Get-ChildItem -Path $buildAbsPath -Filter "*.sln" | Select-Object -First 1
+    
+    if (-not $solutionFile) {
+        Write-Error "No solution file found in build directory: $buildAbsPath"
+        exit 1
+    }
+
+    Write-Host "=== Found solution file: $($solutionFile.Name)"
+
     # Create the lib/Release directory that the linker expects
     $libReleaseDir = Join-Path $buildAbsPath "lib\Release"
     New-Item -ItemType Directory -Path $libReleaseDir -Force | Out-Null
 
-	# Build projects in correct order to resolve dependencies
-	$buildOrder = @(
-		@{Name="LinearMath"; Path="src\LinearMath\LinearMath.vcxproj"},
-		@{Name="Bullet3Common"; Path="src\Bullet3Common\Bullet3Common.vcxproj"}, 
-		@{Name="BulletCollision"; Path="src\BulletCollision\BulletCollision.vcxproj"},
-		@{Name="BulletDynamics"; Path="src\BulletDynamics\BulletDynamics.vcxproj"},
-		@{Name="BulletSoftBody"; Path="src\BulletSoftBody\BulletSoftBody.vcxproj"},
-		@{Name="BulletInverseDynamics"; Path="Extras\InverseDynamics\BulletInverseDynamicsUtils.vcxproj"},
-		@{Name="HACD"; Path="Extras\HACD\HACD.vcxproj"},
-		@{Name="Bullet3OpenCL_clew"; Path="src\Bullet3OpenCL\Bullet3OpenCL_clew.vcxproj"},
-		@{Name="Bullet3Dynamics"; Path="src\Bullet3Dynamics\Bullet3Dynamics.vcxproj"},
-		@{Name="Bullet3Collision"; Path="src\Bullet3Collision\Bullet3Collision.vcxproj"},
-		@{Name="Bullet3Geometry"; Path="src\Bullet3Geometry\Bullet3Geometry.vcxproj"},
-		@{Name="BulletSoftBody"; Path="src\BulletSoftBody\BulletSoftBody.vcxproj"},
-		@{Name="BulletFileLoader"; Path="Extras\Serialize\BulletFileLoader\BulletFileLoader.vcxproj"},
-		@{Name="BulletWorldImporter"; Path="Extras\Serialize\BulletWorldImporter\BulletWorldImporter.vcxproj"},
-		@{Name="BulletXmlWorldImporter"; Path="Extras\Serialize\BulletXmlWorldImporter\BulletXmlWorldImporter.vcxproj"}
-	)
-
-	foreach ($item in $buildOrder) {
-		if ($item -is [hashtable]) {
-			# Handle hashtable items
-			$projectName = $item.Name
-			$projectFullPath = Join-Path $buildAbsPath $item.Path
-		} else {
-			# Handle string items (original logic)
-			$projectName = $item
-			$projectPath = "src\$item\$item.vcxproj"
-			$projectFullPath = Join-Path $buildAbsPath $projectPath
-		}
-		
-		if (Test-Path $projectFullPath) {
-			Write-Host "=== Building $projectName"
-			
-			# Build the project
-			msbuild -p:Configuration=Release -p:LinkIncremental=false -maxCpuCount:1 $projectFullPath
-			
-			if ($LASTEXITCODE -ne 0) {
-				Write-Error "Failed to build $projectName with exit code $LASTEXITCODE"
-				exit $LASTEXITCODE
-			}
-			
-			# Find and copy the built library
-			$libName = "$projectName.lib"
-			if ($item -is [hashtable]) {
-				# For hashtable projects, use their specific directory structure
-				$baseDir = Split-Path $item.Path -Parent
-				$sourcePaths = @(
-					"$baseDir\Release\$libName",
-					"$baseDir\x64\Release\$libName", 
-					"Release\$libName",
-					"x64\Release\$libName"
-				)
-			} else {
-				# For standard projects, use original logic
-				$sourcePaths = @(
-					"src\$projectName\Release\$libName",
-					"src\$projectName\x64\Release\$libName", 
-					"Release\$libName",
-					"x64\Release\$libName"
-				)
-			}
-			
-			foreach ($sourceRelPath in $sourcePaths) {
-				$sourceFullPath = Join-Path $buildAbsPath $sourceRelPath
-				if (Test-Path $sourceFullPath) {
-					Write-Host "=== Copying $libName to $libReleaseDir"
-					Copy-Item $sourceFullPath -Destination $libReleaseDir -Force
-					break
-				}
-			}
-		} else {
-			Write-Warning "Project not found: $projectFullPath"
-		}
-	}
-
-    # Build Serialize extra projects
-    $serializeProjects = @(
-        "BulletFileLoader",
-        "BulletWorldImporter",
-        "BulletXmlWorldImporter"
-    )
-
-    foreach ($project in $serializeProjects) {
-        $projectPath = "Extras\Serialize\$project\$project.vcxproj"
-        $projectFullPath = Join-Path $buildAbsPath $projectPath
-        
-        if (Test-Path $projectFullPath) {
-            Write-Host "=== Building $project"
-            
-            # Build the project with incremental linking disabled
-            msbuild -p:Configuration=Release -p:LinkIncremental=false -maxCpuCount:1 $projectFullPath
-            
-            if ($LASTEXITCODE -ne 0) {
-                Write-Error "Failed to build $project with exit code $LASTEXITCODE"
-                exit $LASTEXITCODE
-            }
-            
-            # Find and copy the built library to where the linker expects it
-            $libName = "$project.lib"
-            $sourcePaths = @(
-                "Extras\Serialize\$project\Release\$libName",
-                "Extras\Serialize\$project\x64\Release\$libName", 
-                "Release\$libName",
-                "x64\Release\$libName"
-            )
-            
-            foreach ($sourceRelPath in $sourcePaths) {
-                $sourceFullPath = Join-Path $buildAbsPath $sourceRelPath
-                if (Test-Path $sourceFullPath) {
-                    Write-Host "=== Copying $libName to $libReleaseDir"
-                    Copy-Item $sourceFullPath -Destination $libReleaseDir -Force
-                    break
-                }
-            }
-        } else {
-            Write-Warning "Project not found: $projectFullPath"
-        }
+    # Build all projects at once using the solution file
+    Write-Host "=== Building all projects using the solution file"
+    msbuild -p:Configuration=Release -p:Platform=x64 -maxCpuCount $solutionFile.FullName
+    
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Failed to build solution with exit code $LASTEXITCODE"
+        exit $LASTEXITCODE
     }
 
     # Return to original directory for file copying
@@ -262,12 +158,9 @@ try {
 
     # Copy the .lib files into the target lib directory
     Write-Host "=== Copy .lib files into the lib dir"
-    $libReleaseDir = Join-Path $buildAbsPath "lib\Release"
-    if (Test-Path $libReleaseDir) {
-        Get-ChildItem -Path $libReleaseDir -Include *.lib -Recurse | ForEach-Object {
-            Write-Host "----- copying $_ to $libAbsPath"
-            Copy-Item $_ -Destination $libAbsPath -Force
-        }
+    Get-ChildItem -Path $buildAbsPath -Include *.lib -Recurse | ForEach-Object {
+        Write-Host "----- copying $_ to $libAbsPath"
+        Copy-Item $_ -Destination $libAbsPath -Force
     }
 
     # Also copy any PDB files for debugging
@@ -319,9 +212,65 @@ try {
         Write-Warning "VERSION file not found in $bulletAbsPath directory"
     }
 
+	# Check for OpenMP support in the built libraries
+	Write-Host "=== Verifying OpenMP support in built libraries..."
+	$librariesToCheck = @("LinearMath.lib", "BulletCollision.lib", "BulletDynamics.lib")
+
+	foreach ($libName in $librariesToCheck) {
+		$libPath = Join-Path $libAbsPath $libName
+		
+		if (Test-Path $libPath) {
+			Write-Host "? Checking $libName for OpenMP support..."
+			
+			# Check for omp_ symbols
+			$ompSymbols = dumpbin /symbols $libPath | Select-String "omp_"
+			if ($ompSymbols) {
+				Write-Host "  Found OpenMP symbols in ${libName}:"
+				$ompSymbols | Select-Object -First 3 | ForEach-Object { Write-Host "    - $_" }
+				if ($ompSymbols.Count -gt 3) {
+					Write-Host "    ... and $($ompSymbols.Count - 3) more OpenMP symbols"
+				}
+			} else {
+				Write-Warning "  No OpenMP symbols found in $libName"
+			}
+			
+			# Check for vcomp symbols specifically
+			$vcompSymbols = dumpbin /symbols $libPath | Select-String "_vcomp"
+			if ($vcompSymbols) {
+				Write-Host "  Found vcomp symbols in ${libName}:"
+				$vcompSymbols | Select-Object -First 3 | ForEach-Object { Write-Host "    - $_" }
+				if ($vcompSymbols.Count -gt 3) {
+					Write-Host "    ... and $($vcompSymbols.Count - 3) more vcomp symbols"
+				}
+			} else {
+				Write-Warning "  No vcomp symbols found in $libName"
+			}
+			
+			# Check if symbols are undefined (which is expected for static libraries)
+			$undefinedSymbols = dumpbin /symbols $libPath | Select-String "UNDEF"
+			$undefinedOmpSymbols = $undefinedSymbols | Select-String "omp_"
+			if ($undefinedOmpSymbols) {
+				Write-Host "  Note: OpenMP symbols are undefined (expected for static libraries):"
+				$undefinedOmpSymbols | Select-Object -First 3 | ForEach-Object { Write-Host "    - $_" }
+				if ($undefinedOmpSymbols.Count -gt 3) {
+					Write-Host "    ... and $($undefinedOmpSymbols.Count - 3) more undefined OpenMP symbols"
+				}
+			}
+		} else {
+			Write-Warning "$libName not found - cannot verify OpenMP support"
+		}
+		Write-Host ""
+	}
+
     Write-Host "=== Bullet build completed successfully!"
     Write-Host "Libraries are in: $libAbsPath"
     Write-Host "Headers are in: $includeAbsPath"
+    Write-Host ""
+    Write-Host "NOTE: The OpenMP symbols will show as undefined in the static libraries."
+    Write-Host "This is normal behavior for static libraries. When you link your application"
+    Write-Host "with these libraries, you need to also link with vcomp.lib (OpenMP library)."
+    Write-Host ""
+    Write-Host "Add this to your application's linker options: /DEFAULTLIB:vcomp.lib"
 }
 finally {
     # Always return to the original directory, regardless of success or failure

@@ -73,18 +73,7 @@ if (Test-Path "VERSION") {
 $VERSIONCFLAGS = "/D BULLETVERSION=`"$BULLETVERSION`" /D BULLETSIMVERSION=`"$BULLETSIMVERSION`""
 
 # Compiler flags
-# Add this to your CFLAGS
-#$CFLAGS = "/I`"$BINCLUDEDIR`" /I. /Zi /EHsc /W3 /nologo /LD /MT /O2 /arch:AVX /fp:fast $VERSIONCFLAGS /D BULLETSIM_EXPORTS /U BT_USE_DOUBLE_PRECISION /D btScalar=float /D BT_LARGE_FLOAT=1e18f"
-
-#$CFLAGS = "/I`"$BINCLUDEDIR`" /I. /Zi /EHsc /W3 /nologo /LD /MT /O2 /arch:AVX /fp:fast $VERSIONCFLAGS /D BULLETSIM_EXPORTS /U BT_USE_DOUBLE_PRECISION"
-
-#$CFLAGS = "/I`"$BINCLUDEDIR`" /I. /Zi /EHsc /W3 /nologo /LD /MT /O2 /arch:AVX /fp:fast $VERSIONCFLAGS /D BULLETSIM_EXPORTS /U BT_USE_DOUBLE_PRECISION /D BT_USE_OPENCL /D B3_USE_CLEW"
-
-#$CFLAGS = "/I`"$BINCLUDEDIR`" /I. /Zi /EHsc /W3 /nologo /LD /MT /O2 /arch:AVX /fp:fast /Gd $VERSIONCFLAGS /D BULLETSIM_EXPORTS /U BT_USE_DOUBLE_PRECISION /D BT_USE_OPENCL /D B3_USE_CLEW"
-
-$CFLAGS = "/I`"$BINCLUDEDIR`" /I. /Zi /EHsc /W3 /nologo /LD /MT /O2 $compilerFlag /fp:fast /openmp:experimental /Gd $VERSIONCFLAGS /D BULLETSIM_EXPORTS /U BT_USE_DOUBLE_PRECISION /D BT_USE_OPENCL /D B3_USE_CLEW /D BT_USE_PROFILE /D USE_OPENMP"
-
-
+$CFLAGS = "/I`"$BINCLUDEDIR`" /I. /Zi /EHsc /W3 /nologo /LD /MT /O2 $compilerFlag /fp:fast /openmp:static /Gd $VERSIONCFLAGS /D BULLETSIM_EXPORTS /U BT_USE_DOUBLE_PRECISION /D BT_USE_OPENCL /D B3_USE_CLEW /D BT_USE_PROFILE /D USE_OPENMP"
 
 $EXTRAS_INCLUDE_PATH = "$BINCLUDEDIR\Extras"
 if (Test-Path $EXTRAS_INCLUDE_PATH -PathType Container) {
@@ -92,7 +81,8 @@ if (Test-Path $EXTRAS_INCLUDE_PATH -PathType Container) {
     Write-Host "? Added Extras include path: $EXTRAS_INCLUDE_PATH"
 }
 
-$LFLAGS = "/DLL /OUT:`"$TARGET`" /NOLOGO /DEBUG /LIBPATH:`"$BLIBDIR`""
+# Linker flags - ADD OPENMP LINKING HERE
+$LFLAGS = "/DLL /OUT:`"$TARGET`" /NOLOGO /DEBUG /LIBPATH:`"$BLIBDIR`" /DEFAULTLIB:vcomp.lib"
 
 # Function to verify a library exists
 function Verify-Library {
@@ -272,9 +262,13 @@ $linkArgs = @(
     "/NOLOGO",
     "/DEBUG",
     "/LIBPATH:$BLIBDIR",
+    "/DEFAULTLIB:vcomp.lib",  # ADD OPENMP LINKING
     "API2.obj",
     "BulletSim.obj"
 ) + $BULLETLIBS
+
+# Add OpenMP library explicitly
+$linkArgs += "vcomp.lib"
 
 if ($openclFound) {
     $linkArgs += $OPENCL_LIB
@@ -299,6 +293,16 @@ if ($LASTEXITCODE -eq 0) {
         } else {
             Write-Warning "BSLog symbol not found in exports - may cause runtime errors"
         }
+		
+		# Check for OpenMP static linking: we should not import OpenMP functions from a DLL
+		Write-Host "=== Verifying OpenMP static linking..."
+		$imports = dumpbin /imports $TARGET
+		$openmpImports = $imports | Select-String "vcomp"
+		if ($openmpImports) {
+			Write-Warning "OpenMP dynamic linking detected - imports: $openmpImports"
+		} else {
+			Write-Host "? OpenMP is statically linked (no imports of vcomp.dll)"
+		}
         
     } else {
         Write-Error "DLL was not created despite successful link"

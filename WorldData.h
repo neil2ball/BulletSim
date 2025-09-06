@@ -26,7 +26,15 @@
  */
 
 #pragma once
-
+#ifdef _WIN32
+  #ifdef BULLETSIM_EXPORTS
+    #define BULLETSIM_API __declspec(dllexport)
+  #else
+    #define BULLETSIM_API __declspec(dllimport)
+  #endif
+#else
+  #define BULLETSIM_API
+#endif
 #ifndef WORLD_DATA_H
 #define WORLD_DATA_H
 
@@ -101,9 +109,36 @@ struct BULLETSIM_API WorldData
 	}
 	*/
 	// Call back into the managed world to output a log message with formatting	
-	void BSLog(const char* msg, ...);
-    	void BSLog2(const char* msg, va_list argp);
+	void BSLog(const char* msg, ...) {
+		char buffer[4096];
+		va_list args;
+		va_start(args, msg);
+		vsnprintf(buffer, sizeof(buffer), msg, args);
+		va_end(args);
 
+		// Output to console
+		printf("%s\n", buffer);
+		fflush(stdout);
+
+		// Also call the debug callback if it exists
+		if (debugLogCallback != nullptr) {
+			debugLogCallback(buffer);
+		}
+	}
+
+	void BSLog2(const char* msg, va_list argp) {
+		char buffer[4096];
+		vsnprintf(buffer, sizeof(buffer), msg, argp);
+
+		// Output to console
+		printf("%s\n", buffer);
+		fflush(stdout);
+
+		// Also call the debug callback if it exists
+		if (debugLogCallback != nullptr) {
+			debugLogCallback(buffer);
+		}
+	}
 
 	void	dumpAll()
 	{

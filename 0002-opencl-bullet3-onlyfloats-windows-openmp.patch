@@ -1,11 +1,12 @@
 --- bullet3/CMakeLists.txt	2025-09-03 20:13:03.357562300 +0200
-+++ bullet3/CMakeLists.txt.newlinux	2025-09-05 13:39:54.896050400 +0200
-@@ -1,10 +1,28 @@
++++ bullet3/CMakeLists.txt.new	2025-09-03 22:40:37.625700000 +0200
+@@ -1,10 +1,29 @@
  cmake_minimum_required(VERSION 3.5)
  set(CMAKE_ALLOW_LOOSE_LOOP_CONSTRUCTS true)
++add_subdirectory(bullet3)
 +set(OPENCL_FOUND TRUE)
-+set(OPENCL_INCLUDE_DIR "${HOME}/OpenCL-SDK/include/CL")
-+set(OPENCL_LIBRARY "${HOME}/OpenCL-SDK/lib/libOpenCL.so")
++set(OPENCL_INCLUDE_DIR "C:/OpenCL-SDK/include/CL")
++set(OPENCL_LIBRARY "C:/OpenCL-SDK/lib/OpenCL.lib")
 +set(USE_DOUBLE_PRECISION OFF CACHE BOOL "Use double precision" FORCE)
 +set(USE_OPENCL ON CACHE BOOL "" FORCE)
 +set(BUILD_BULLET3 ON CACHE BOOL "" FORCE)
@@ -30,7 +31,7 @@
  FILE (STRINGS "VERSION" BULLET_VERSION)
  
  IF(COMMAND cmake_policy)
-@@ -32,9 +50,9 @@
+@@ -32,9 +51,9 @@
  
  OPTION(ENABLE_VHACD "Use VHACD in BulletRobotics and pybullet" ON)
  

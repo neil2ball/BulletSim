@@ -168,15 +168,36 @@ EXTERN_C DLL_EXPORT BulletSim* Initialize2(Vector3 maxPosition, ParamBlock* parm
 {
 	bsDebug_Initialize();
 	
-	omp_set_dynamic(1);  // Let OpenMP decide the best number of threads
-    omp_set_num_threads(omp_get_max_threads());  // Set upper limit
+   omp_set_dynamic(1); // Allow runtime to adjust threads
+	omp_set_num_threads(omp_get_max_threads());  // Set upper limit
 	
-	#pragma omp parallel
+	// One-off parallel region to check initial thread count
+    #pragma omp parallel
     {
-		if (omp_get_thread_num() == 0) {
-			std::cout << "OpenMP is active with thread count: " << omp_get_num_threads() << "\n";
-		}
+        #pragma omp single
+        std::cout << "OpenMP initially allocated dynamically: "
+                  << omp_get_num_threads() << " threads\n";
     }
+	
+	std::cout << "Max possible threads for next region: " 
+			  << omp_get_max_threads() << "\n";
+
+	// Run several parallel regions with a heavy workload
+	for (int iter = 0; iter < 5; ++iter) {
+		double sum = 0.0;
+
+		#pragma omp parallel
+		{
+			#pragma omp single
+			std::cout << "Iteration " << iter
+					  << " -> threads used: " << omp_get_num_threads() << "\n";
+
+			#pragma omp for reduction(+:sum)
+			for (long long i = 0; i < 500'000'000LL; ++i) {
+				sum += i * 0.0000001;
+			}
+		}
+	}
 
 	BulletSim* sim = new BulletSim(maxPosition.X, maxPosition.Y, maxPosition.Z);
 	sim->getWorldData()->debugLogCallback = debugLog;

@@ -19,6 +19,29 @@ USEOPENCL=${USEOPENCL:-yes}
 # Note that Bullet3 sources are build in "bullet3/" and the
 #     these are copied into "bullet2/" and checkouted to the version 2 sources.
 
+# Target OS selection
+echo "=== Select Target OS ==="
+echo "1. Linux"
+echo "2. Windows"
+read -p "Enter your choice (1-2): " os_choice
+
+case "$os_choice" in
+    1) 
+        TARGET_OS="linux"
+        echo "Selected target: Linux"
+        ;;
+    2) 
+        TARGET_OS="windows"
+        echo "Selected target: Windows"
+        ;;
+    *)
+        echo "Invalid selection. Defaulting to Linux."
+        TARGET_OS="linux"
+        ;;
+esac
+
+export TARGET_OS
+
 BASE=$(pwd)
 
 # Check for OpenCL SDK installation if OpenCL is enabled
@@ -59,7 +82,10 @@ if [ "$USEOPENCL" = "yes" ]; then
             export OpenCL_INCLUDE_DIR="$OPENCL_SDK_ROOT/include"
             export OpenCL_LIBRARY_DIR="$OPENCL_SDK_ROOT/lib"
             export PATH="$OPENCL_SDK_ROOT/bin:$PATH"
-            export LD_LIBRARY_PATH="$OPENCL_SDK_ROOT/lib:$LD_LIBRARY_PATH"
+            if [ "$TARGET_OS" = "linux" ]; then
+                export LD_LIBRARY_PATH="$OPENCL_SDK_ROOT/lib:$LD_LIBRARY_PATH"
+            fi
+			
             echo "OpenCL SDK installation completed."
         else
             echo "WARNING: OpenCL SDK install script '$installScript' not found. Continuing without OpenCL support."
@@ -83,7 +109,7 @@ if [ "$FETCHBULLETSOURCES" = "yes" ]; then
     for file in ../000*; do
         filename=$(basename "$file")
         echo "Processing patch: $filename"
-		if [ "$filename" = "0002-opencl-bullet3-onlyfloats-windows-openml.patch" ]; then
+		if [ "$filename" = "0002-opencl-bullet3-onlyfloats-windows-openmp.patch" ]; then
 			continue
 		fi
 

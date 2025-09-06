@@ -1248,32 +1248,3 @@ void BulletSim::DumpPhysicsStats()
 	// CProfileManager::dumpAll();
 	return;
 }
-
-#ifdef _WIN32
-    #define BULLETSIM_API __declspec(dllexport)
-#else
-    #define BULLETSIM_API
-#endif
-
-BULLETSIM_API void WorldData::BSLog(const char* msg, ...)
-{
-	va_list args;
-	va_start(args, msg);
-	BSLog2(msg, args);
-	va_end(args);
-}
-
-BULLETSIM_API void WorldData::BSLog2(const char* msg, va_list argp)
-{
-	char buffer[4096];
-	vsnprintf(buffer, sizeof(buffer), msg, argp);
-
-	// Output to console
-	printf("%s\n", buffer);
-	fflush(stdout);
-
-	// Also call the debug callback if it exists
-	if (debugLogCallback != nullptr) {
-	debugLogCallback(buffer);
-	}
-}
